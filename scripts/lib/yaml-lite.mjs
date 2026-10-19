@@ -117,18 +117,56 @@ function findKeySep(s) {
   return -1
 }
 
+/**
+ * 双引号标量的反转义 —— **单趟左到右扫描**，不是一串 `.replace()`。
+ *
+ * 2026-10-20 实测修掉的真实数据损坏：原实现按 `\n` → `\t` → `\"` → `\\` 的顺序
+ * 连做四次全局替换。顺序错了就会吃掉本该保留的字符：`"C:\\nodejs"` 里第二个反斜杠
+ * 恰好和 `n` 组成 `\n`，被第一条规则先换成真换行，于是 Windows 路径 `C:\nodejs`
+ * 读出来变成 `C:<换行>odejs`。Windows 宿主上任何提到绝对路径的条目 claim 都会中招，
+ * 而注入出来的半句话比不注入更糟（人会照着读错的内容行动）。
+ * 一串全局替换的通病：每条规则都在**已经改写过的字符串**上再扫一遍，
+ * 上一条规则的输出会成为下一条的输入 —— 顺序敏感且无法自证正确。
+ * 单趟扫描则是「每个源字符恰好被读一次」，转义语义与 YAML 规范一致。
+ */
+const DQ_UNESCAPE = {
+  '0': '\0', a: '\x07', b: '\b', t: '\t', '\t': '\t', n: '\n', v: '\v',
+  f: '\f', r: '\r', e: '\x1b', ' ': ' ', '"': '"', '/': '/', '\\': '\\',
+  N: '\x85', _: '\xa0', L: ' ', P: ' ',
+}
+
+function unescapeDoubleQuoted(body, lineNo) {
+  let out = ''
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i]
+    if (c !== '\\') { out += c; continue }
+    const n = body[i + 1]
+    if (n === undefined) throw new YamlLiteError(`双引号标量以孤立的反斜杠结尾: ${body}`, lineNo)
+    if (n === 'x' || n === 'u' || n === 'U') {
+      const width = n === 'x' ? 2 : n === 'u' ? 4 : 8
+      const hex = body.slice(i + 2, i + 2 + width)
+      if (hex.length !== width || !/^[0-9a-fA-F]+$/.test(hex)) {
+        throw new YamlLiteError(`\\${n} 转义需要 ${width} 位十六进制: ${body.slice(i, i + 8)}`, lineNo)
+      }
+      out += String.fromCodePoint(parseInt(hex, 16))
+      i += 1 + width
+      continue
+    }
+    if (Object.hasOwn(DQ_UNESCAPE, n)) { out += DQ_UNESCAPE[n]; i++; continue }
+    // 未知转义：YAML 规范判错，但宽松放行更安全 —— 收紧会让既有条目突然读不出来，
+    // 而「原样保留」是本协议对用户正文的承诺。
+    out += c
+  }
+  return out
+}
+
 /** 解析标量：引号剥离 / null / bool / 数值 / 日期，其余按字符串。 */
 function parseScalar(s, lineNo) {
   const t = s.trim()
   if (t === '' || t === '~' || t === 'null' || t === 'Null' || t === 'NULL') return null
   if (t[0] === '"') {
     if (t.length < 2 || t[t.length - 1] !== '"') throw new YamlLiteError(`双引号标量未闭合: ${t}`, lineNo)
-    return t
-      .slice(1, -1)
-      .replace(/\\n/g, '\n')
-      .replace(/\\t/g, '\t')
-      .replace(/\\"/g, '"')
-      .replace(/\\\\/g, '\\')
+    return unescapeDoubleQuoted(t.slice(1, -1), lineNo)
   }
   if (t[0] === "'") {
     if (t.length < 2 || t[t.length - 1] !== "'") throw new YamlLiteError(`单引号标量未闭合: ${t}`, lineNo)
