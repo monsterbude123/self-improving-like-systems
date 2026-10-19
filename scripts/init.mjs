@@ -168,7 +168,7 @@ export function renderRegistry() {
  *     `"k": "node "C:/a b/run-tests.mjs""` 是坏 JSON，粘进 package.json 直接解析失败。
  */
 export function selfTestScript() {
-  const p = posixRel(path.join(PROTOCOL_ROOT, 'run-tests.mjs'))
+  const p = posixRel(path.join(PROTOCOL_ROOT, 'scripts', 'run-tests.mjs'))
   return /\s/.test(p) ? `node "${p}"` : `node ${p}`
 }
 

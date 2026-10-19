@@ -27,15 +27,17 @@ import {
   WORK_ROOT,
 } from '../scripts/init.mjs'
 import { validateConfig, KILL_SWITCH_KEYS } from '../scripts/validate.mjs'
+import { listTestFiles, main as mainRunTests } from '../scripts/run-tests.mjs'
 import { parseYaml } from '../scripts/lib/yaml-lite.mjs'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const SKILL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const INIT = path.join(SKILL_ROOT, 'scripts', 'init.mjs')
+const RUN_TESTS = path.join(SKILL_ROOT, 'scripts', 'run-tests.mjs')
 const CONFIG_PATH = '.self-improving.yaml'
 const REGISTRY_PATH = `${TRACKED_ROOT}/registry.yaml`
 
@@ -338,6 +340,99 @@ test('破坏测试自检：排除建议与产物路径是同一条纪律的两�
       `${key} 不在要 ignore 的工作目录下，与排除建议脱钩`,
     )
   }
+})
+
+// ── run-tests.mjs：判据入口（2026-10-19 · T2） ─────────────────────────────
+// 接入项目的 npm script 必须指向协议层这个脚本，而不是把「协议层在某仓某目录」写死进 package.json
+// —— 那种写法在协议层挪位置后指向不存在的路径，而 npm 脚本失败常被 CI 当成不稳定跳过，
+// 于是**静默失去全部回归保护**。
+//
+// 这里**不直接拉起真实全量套件**：入口会跑 tests/ 下所有文件，其中包括本文件 —— 于是
+// 本文件再拉起入口，就是无限递归。改用「把真实脚本复制进一个合成协议根」的办法：
+// 验的是同一份代码，但能自由摆布测试内容 —— 连「有失败时退出码非 0」这种真实套件
+// 永远演示不出来的情况也能验。
+
+/** 造一个合成协议根：真实 run-tests.mjs + 指定内容的 tests/。 */
+function fakeProtocolRoot(testFiles) {
+  const root = mkdtempSync(path.join(tmpdir(), 'si-fakeroot-'))
+  mkdirSync(path.join(root, 'scripts'), { recursive: true })
+  copyFileSync(RUN_TESTS, path.join(root, 'scripts', 'run-tests.mjs'))
+  const tests = path.join(root, 'tests')
+  mkdirSync(tests, { recursive: true })
+  for (const [name, body] of Object.entries(testFiles)) {
+    writeFileSync(path.join(tests, name), body, 'utf8')
+  }
+  return { root, entry: path.join(root, 'scripts', 'run-tests.mjs'), tests }
+}
+
+const PASSING = "import test from 'node:test'\ntest('ok', () => {})\n"
+const FAILING = "import test from 'node:test'\nimport assert from 'node:assert/strict'\ntest('bad', () => assert.equal(1, 2))\n"
+
+/** 以指定 cwd 跑合成入口。 */
+function runFake(entry, cwd) {
+  const r = spawnSync(process.execPath, [entry], { cwd, encoding: 'utf8', timeout: 120_000 })
+  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' }
+}
+
+test('run-tests 列出全部 *.test.mjs 且按名排序（顺序稳定 → 「哪条先红」可复现）', () => {
+  const files = listTestFiles()
+  assert.ok(files.length >= 10, `只找到 ${files.length} 个测试文件 —— glob 或目录定位坏了`)
+  assert.ok(files.every((f) => f.endsWith('.test.mjs')))
+  assert.deepEqual(files, [...files].sort(), '文件顺序不稳定')
+  assert.ok(files.some((f) => f.endsWith(`${path.sep}init.test.mjs`)), '连本文件都没被收进去')
+})
+
+test('run-tests 在找不到测试目录时报错而不是静默通过', () => {
+  // 路径**根本不存在**（不是「存在但为空」—— 那是下一条用例的另一条分支）
+  const missing = path.join(mkdtempSync(path.join(tmpdir(), 'si-notests-')), '没有这个目录')
+  assert.throws(() => listTestFiles(missing), /找不到测试目录/, '「没跑」被当成了「跑过了」')
+})
+
+test('run-tests 在测试目录为空时报错（空 ≠ 全绿）', () => {
+  const { tests } = fakeProtocolRoot({})
+  assert.throws(() => listTestFiles(tests), /没有任何 \*\.test\.mjs/)
+  assert.equal(runFake(path.join(path.dirname(tests), 'scripts', 'run-tests.mjs'), path.dirname(tests)).status, 2)
+})
+
+test('run-tests 全绿时退出 0 且真的跑出了 TAP 汇总', () => {
+  const { root, entry } = fakeProtocolRoot({ 'a.test.mjs': PASSING })
+  const r = runFake(entry, root)
+  // 光看退出码会被 NODE_TEST_CONTEXT 骗过去：那变量存在时子进程会静默跳过整个文件并 exit 0。
+  // 本用例正是从 `node --test` 里发起的，所以它同时验掉了那层坑。
+  assert.match(r.stdout, /# tests \d+/, `没跑出 TAP 汇总（多半是 NODE_TEST_CONTEXT 没剥净）\n${r.stdout.slice(-500)}`)
+  assert.match(r.stdout, /# fail 0/)
+  assert.equal(r.status, 0, r.stderr)
+})
+
+test('run-tests 有失败时退出非 0（不是「永远绿」的那种自检）', () => {
+  const { root, entry } = fakeProtocolRoot({ 'a.test.mjs': PASSING, 'b.test.mjs': FAILING })
+  const r = runFake(entry, root)
+  assert.match(r.stdout, /# fail 1/)
+  assert.notEqual(r.status, 0, '有失败却退出 0 —— 那正是「永远 exit 0 的自检」，比没有自检更坏')
+})
+
+test('run-tests 与 cwd 无关（换目录调用，退出码与跑的用例数一致）', () => {
+  const { root, entry } = fakeProtocolRoot({ 'a.test.mjs': PASSING, 'b.test.mjs': PASSING })
+  const elsewhere = mkdtempSync(path.join(tmpdir(), 'si-elsewhere-'))
+  const a = runFake(entry, root)
+  const b = runFake(entry, elsewhere)
+  assert.equal(b.status, a.status, '换个目录跑就改了退出码 —— 入口还在按 cwd 定位')
+  const count = (s) => (/# tests (\d+)/.exec(s) ?? [])[1]
+  assert.equal(count(b.stdout), count(a.stdout), '换个目录跑跑的用例数就变了')
+  assert.equal(count(a.stdout), '2')
+})
+
+test('run-tests 拒绝位置参数（不猜调用方想跑哪个文件）', () => {
+  assert.equal(mainRunTests(['tests/validate.test.mjs']), 2)
+})
+
+test('init 建议的 test:self-improving 指向协议层真实存在的入口脚本', () => {
+  // 指向一个不存在的脚本 = 接入项目的自检命令恒失败，而失败常被跳过 —— 静默失去保护
+  const cmd = selfTestScript()
+  assert.match(cmd, /^node /)
+  const target = cmd.replace(/^node "?/, '').replace(/"$/, '')
+  assert.ok(existsSync(target), `建议指向的脚本不存在：${target}`)
+  assert.match(target, /run-tests\.mjs$/)
 })
 
 // ── planInit 的形状 ─────────────────────────────────────────────────────────

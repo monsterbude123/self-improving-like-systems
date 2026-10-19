@@ -71,18 +71,31 @@ git clone https://github.com/monsterbude123/self-improving-like-systems.git \
 ## 自检
 
 ```bash
-cd ~/.agents/skills/self-improving-like-systems && node run-tests.mjs
+node ~/.agents/skills/self-improving-like-systems/scripts/run-tests.mjs
 ```
 
-当前基线：`357 tests · 357 pass · 0 fail · 0 skipped`，零外部依赖（无 `node_modules`，无包管理器）。
+在哪个目录跑都一样 —— 它按自身位置找 `tests/`，不按 cwd。
+当前基线：`388 tests · 388 pass · 0 fail · 0 skipped`，零外部依赖（无 `node_modules`，无包管理器）。
+
+> 自己接了协议层的项目，`package.json` 里指向这个脚本而不是指向协议层里的某个路径：
+> npm 脚本失败常被 CI 当成「不稳定」跳过，于是**静默失去全部回归保护**。
 
 ## 接一个项目
 
-1. 写实例配置：复制 `scripts/config.example.yaml` 到仓根改名 `.self-improving.yaml`，
-   替换 `scope.values`（主题分组）与 `storage.*`（路径布局）
-2. 写守卫注册表：复制 `scripts/registry.example.yaml` 到 `storage.registry` 指定处
-3. 接线：`node scripts/hook-install.mjs --doctor --project-dir <项目目录>` 体检
-4. 逐条打开 `kill_switch` —— **开关必须先于它防的风险存在**
+```bash
+node <协议层>/scripts/init.mjs --project-dir <项目目录>          # 先看它打算落什么，零写盘
+node <协议层>/scripts/init.mjs --project-dir <项目目录> --apply   # 确认后再落
+```
+
+它落两份文件（仓根 `.self-improving.yaml` + `.self-improving/registry.yaml`），
+已存在的文件一律不动，所以可以放心重复跑。落完还剩三件要人做：
+
+1. 把 `.self-improving-work/` 加进 `.gitignore` 或 `.git/info/exclude`
+   —— 运行时数据都在这里，漏了的话每次跑完 `git status` 就不干净
+2. 填 `scope.values`（文件里有 TODO 标记；不填也能跑，fail-safe 桶永不自动注入）
+3. 接线体检：`node <协议层>/scripts/hook-install.mjs --doctor --project-dir <项目目录>`
+
+最后逐条打开 `kill_switch` —— **开关必须先于它防的风险存在**。
 
 ## 目录
 
@@ -93,7 +106,9 @@ cd ~/.agents/skills/self-improving-like-systems && node run-tests.mjs
 | `references/stoploss.md` | 止损冻结 / 恢复程序 |
 | `references/hook-wiring*.json` | 接线片段的权威形态（`<SKILL_DIR>` 占位符） |
 | `scripts/validate.mjs` | 校验器 CLI（条目 / 配置 / 注册表 / 绑定） |
-| `scripts/*.mjs` | 注入、捕获、蒸馏、批准、守卫派发、生命周期收口、运维对账 |
+| `scripts/init.mjs` | 接入脚手架：派生实例配置 + 落实目录分层 |
+| `scripts/run-tests.mjs` | 全套判据的唯一入口（cwd 无关；找不到 `tests/` 即 exit 2） |
+| `scripts/*.mjs` | 注入、捕获、蒸馏、批准、守卫派发、生命周期收口、运维对账、接线体检 |
 | `tests/` | `node:test` 套件，含破坏测试与可移植性守卫 |
 
 ## 几条硬纪律
