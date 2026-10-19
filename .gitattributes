@@ -1,0 +1,4 @@
+# 行尾钉死：协议层多处做字节级比较（verify --restore 字节级可逆、atomic-file 落盘），
+# 若跟随宿主 core.autocrlf 变成 CRLF，clone 出来的工作副本与源仓不再逐字节相同，
+# 且字节级断言会假红。eol=lf 让 clone 在任何平台都得到与源仓一致的 LF。
+* text=auto eol=lf
