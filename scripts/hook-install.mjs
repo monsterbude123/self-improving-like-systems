@@ -9,7 +9,10 @@
  *   --doctor  体检：对着各仓 `.zcode/config.json` 逐条判，**静默失效当场报出**
  *   （默认）    只吐接线片段到 stdout，不碰任何文件 —— 接线是机器本地的，
  *               各仓 `.zcode/config.json` 被 exclude、不入库，片段才是可复用的权威
- *   --apply   直接把片段写进 `--project-dir` 的配置（已存在的条目**不动**，只增缺的那些）
+ *   --apply   直接把片段写进 `--project-dir` 的配置（已存在的条目**不动**，只增缺的那些）。
+ *             配置文件**不存在**时会新建（空配置 + hooks 段，无既有内容可覆盖）；
+ *             存在但**不是合法 JSON** 时拒绝并退出 —— 那更可能是别人正在编辑的半成品，
+ *             覆盖它造成的损失远大于让人手工并一次片段。
  *
  * **体检查得出 / 查不出的**（重要，不要误用）：
  *   查得出 = 配置层错误：开关没开 / 事件名非法 / 类型与字段错配 / 超时单位错 /
@@ -23,7 +26,7 @@
  * 退出码：0 = 通过 / 1 = 体检发现配置层问题 / 2 = 用法错误。
  * O(1) spawn：全部判定进程内完成，零子进程。
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -302,14 +305,28 @@ export function main(argv) {
   }
 
   // --apply：只增缺失条目，既有条目一律不动（禁止覆盖别人的接线）
+  let cfg = null
+  let created = false
   if (!existsSync(cfgPath)) {
-    if (asJson) { console.log(JSON.stringify({ ok: false, reason: `配置不存在：${cfgPath}` })); return 1 }
-    console.log(`[apply] 配置不存在：${cfgPath}（不新建 —— 新建会覆盖该仓既有的 hooks 段，请手工并入片段）`)
-    return 1
+    // 原实现在这里一律拒绝，理由写的是「新建会覆盖该仓既有的 hooks 段」。
+    // 那条理由对「文件存在但解析失败」成立，对**文件根本不存在**不成立：
+    // 不存在的文件没有任何内容可覆盖，`--apply` 新建它不可能弄丢任何东西。
+    // 一律拒绝的实际后果是 2026-10-20 实测到的死局：一个全新项目（有 `.git`、
+    // 无 `.zcode/`）永远接不上线 —— 而「协议层能被别的项目接进去」正是本仓存在的理由。
+    // 所以这里区分两种情况：文件不存在 → 建空配置再接线（并如实报告这是新文件）；
+    // 文件存在 → 走原有的「解析失败即拒绝」，绝不覆盖别人的配置。
+    cfg = {}
+    created = true
+  } else {
+    try { cfg = JSON.parse(readFileSync(cfgPath, 'utf8')) }
+    catch (e) {
+      if (asJson) { console.log(JSON.stringify({ ok: false, reason: `配置不是合法 JSON：${e.message}` })); return 1 }
+      console.log(`[apply] ❌ 配置存在但不是合法 JSON：${e.message}`)
+      console.log(`[apply]   ${cfgPath}`)
+      console.log('[apply]   不覆盖它 —— 一份坏掉的配置更可能是别人正在编辑。请手工修好或手工并入片段。')
+      return 1
+    }
   }
-  let cfg
-  try { cfg = JSON.parse(readFileSync(cfgPath, 'utf8')) }
-  catch (e) { console.log(`[apply] ❌ 配置不是合法 JSON：${e.message}`); return 1 }
   cfg.hooks = cfg.hooks ?? {}
   cfg.hooks.enabled = true
   cfg.hooks.events = cfg.hooks.events ?? {}
@@ -320,7 +337,14 @@ export function main(argv) {
     cfg.hooks.events[event] = [frag]
     added.push(event)
   }
+  mkdirSync(path.dirname(cfgPath), { recursive: true })
   writeFileSync(cfgPath, `${JSON.stringify(cfg, null, 2)}\n`, 'utf8')
+  if (created) {
+    if (asJson) { console.log(JSON.stringify({ ok: true, created: cfgPath, added, kept })); return 0 }
+    console.log(`[apply] 新建配置：${cfgPath}`)
+    console.log('[apply]   该文件此前不存在，本次只写入 hooks 段（无任何既有内容被覆盖）。')
+    console.log('[apply]   它机器本地、被 exclude、不入库 —— 同事各自在自己机器上跑一次本命令。')
+  }
   console.log(`[apply] 已补：${added.length ? added.join(', ') : '(无)'}`)
   console.log(`[apply] 已存在未动：${kept.length ? kept.join(', ') : '(无)'}`)
   console.log('[apply] ⚠️ 配置改动**下个会话生效**（hooks 在会话启动时读一次），本会话验证不了。')

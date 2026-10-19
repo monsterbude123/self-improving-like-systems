@@ -240,3 +240,90 @@ test('片段并进配置后 doctor 零问题（片段本身就是可接线的）
   const { problems } = doctorConfig(JSON.parse(readFileSync(path.join(project, '.zcode', 'config.json'), 'utf8')), SCRIPTS)
   assert.deepEqual(problems, [], `官方片段自己过不了自家体检：${problems.join(' | ')}`)
 })
+
+// ===== --apply 的写盘分支 =====
+// 2026-10-20 实测新增：原实现在「配置文件不存在」时一律拒绝，理由写的是
+// 「新建会覆盖该仓既有的 hooks 段」。可文件不存在时根本没有既有内容可覆盖，
+// 实际后果是**全新项目永远接不上线**（`.git` 有、`.zcode/` 无 → 直接 exit 1）。
+// 那条纪律本意是「别覆盖别人正在编辑的配置」，与「这里什么都没有」是两件事，
+// 混成一条就变成了「不给新建」。下面三条分别钉住两个分支 + 各自的破坏用例。
+
+/** 跑一次 --apply，返回 { code, stdout }（不碰真实项目，全在临时目录里）。 */
+function runApply(project, extra = []) {
+  const r = spawnSync(
+    process.execPath,
+    [path.join(SCRIPTS, 'hook-install.mjs'), '--apply', '--project-dir', project, ...extra],
+    { encoding: 'utf8', timeout: 60_000 },
+  )
+  return { code: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' }
+}
+
+test('--apply 在配置不存在时新建并接线（全新项目必须能接上线）', () => {
+  const project = mkdtempSync(path.join(tmpdir(), 'si-apply-new-'))
+  assert.ok(!existsSync(path.join(project, '.zcode')), '前提：临时项目不该有 .zcode/')
+
+  const r = runApply(project)
+  assert.equal(r.code, 0, `全新项目 --apply 失败：${r.stdout}${r.stderr}`)
+
+  const cfgPath = path.join(project, '.zcode', 'config.json')
+  assert.ok(existsSync(cfgPath), '--apply 成功后配置文件必须存在')
+
+  const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'))
+  assert.equal(cfg.hooks.enabled, true)
+  const { problems } = doctorConfig(cfg, SCRIPTS)
+  assert.deepEqual(problems, [], `新建的配置过不了自家体检：${problems.join(' | ')}`)
+})
+
+test('--apply 新建时如实报告是新文件（不谎称「已存在未动」）', () => {
+  const project = mkdtempSync(path.join(tmpdir(), 'si-apply-report-'))
+  const r = runApply(project)
+  assert.equal(r.code, 0)
+  assert.match(r.stdout, /新建配置/, '新建文件这件事必须对人说，否则会被当成「本来就有 hooks」')
+  assert.doesNotMatch(r.stdout, /配置不存在.*不新建/, '不应再输出旧版那条拒绝话术')
+})
+
+test('--apply 幂等：连跑两次第二次零变更（第二次不该重复补事件）', () => {
+  const project = mkdtempSync(path.join(tmpdir(), 'si-apply-idem-'))
+  assert.equal(runApply(project).code, 0)
+  const cfgPath = path.join(project, '.zcode', 'config.json')
+  const first = readFileSync(cfgPath, 'utf8')
+
+  const second = runApply(project)
+  assert.equal(second.code, 0)
+  assert.equal(readFileSync(cfgPath, 'utf8'), first, '第二次 --apply 改动了配置 —— 不幂等')
+  assert.match(second.stdout, /已存在未动/, '第二次应报告「已存在未动」')
+})
+
+test('--apply 绝不覆盖既有的其他 hooks 段（只增缺的事件）', () => {
+  const project = mkdtempSync(path.join(tmpdir(), 'si-apply-keep-'))
+  mkdirSync(path.join(project, '.zcode'), { recursive: true })
+  const cfgPath = path.join(project, '.zcode', 'config.json')
+  const original = {
+    hooks: {
+      enabled: true,
+      events: { PostToolUse: [{ hooks: [{ type: 'command', command: 'echo hi' }] }] },
+    },
+    别的键: '原样保留',
+  }
+  writeFileSync(cfgPath, `${JSON.stringify(original, null, 2)}\n`, 'utf8')
+
+  const r = runApply(project)
+  assert.equal(r.code, 0, r.stdout + r.stderr)
+  const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'))
+  assert.deepEqual(cfg.hooks.events.PostToolUse, original.hooks.events.PostToolUse, '别人的事件被改了')
+  assert.equal(cfg.别的键, '原样保留', '无关键被丢了')
+  assert.ok(cfg.hooks.events.SessionStart, '缺失的 SessionStart 应被补上')
+})
+
+test('破坏测试：配置存在但不是合法 JSON → 必须拒绝且**不改文件**', () => {
+  const project = mkdtempSync(path.join(tmpdir(), 'si-apply-bad-'))
+  mkdirSync(path.join(project, '.zcode'), { recursive: true })
+  const cfgPath = path.join(project, '.zcode', 'config.json')
+  const broken = '{ "hooks": { "enabled": true, '   // 截断的 JSON，像别人编辑到一半
+  writeFileSync(cfgPath, broken, 'utf8')
+
+  const r = runApply(project)
+  assert.equal(r.code, 1, '坏 JSON 必须拒绝而不是「修好了再写」')
+  assert.match(r.stdout + r.stderr, /不是合法 JSON/, '报错要点名真因，不能只说失败')
+  assert.equal(readFileSync(cfgPath, 'utf8'), broken, '拒绝时竟然动了那个半成品文件 —— 这正是要防的覆盖')
+})
