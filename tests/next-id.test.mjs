@@ -46,6 +46,28 @@ if (!has && !SCRIPT_OVERRIDDEN) {
 /** 固定日期，避免测试结果随当天已有条目漂移。 */
 const DATE = '20990131'
 
+/**
+ * 编号账本目录 —— **按脚本自己的口径**推，不按 SKILL_ROOT。
+ *
+ * next-id.sh 第 25-31 行的注释写得很明确：仓根从 `git rev-parse --show-toplevel` 与
+ * `--git-common-dir` 推，**不从脚本自身位置**推，因为脚本住在 skill 目录里，
+ * 按 `$BASH_SOURCE/../..` 只会落到 skill 根（一个和 .learnings 毫无关系的目录）。
+ *
+ * 本测试原来写的是 `SKILL_ROOT/.learnings-work/claims`。在协议仓里两者恰好重合
+ * （协议仓自己就是 git 仓，git-common-dir 的父目录 = 协议仓根），于是这个错断言
+ * 长期是绿的 —— **被布局巧合掩盖**。2026-10-19 把协议层内容同步回业务仓的仓内副本后
+ * 立刻变红：副本里脚本落在业务仓，账本跟着去业务仓根，而 SKILL_ROOT 仍指 skill 目录。
+ *
+ * 这类「只在某种布局下成立」的断言比没有断言更糟 —— 它给了一层假的安全感。
+ * 这里复刻脚本的推导，且推导不出时报错而非跳过。
+ */
+function claimsDir() {
+  const root = spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 30_000 }).stdout?.trim()
+  const common = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8', timeout: 30_000 }).stdout?.trim()
+  if (!root || !common) return null
+  return path.join(path.dirname(common), '.learnings-work', 'claims')
+}
+
 function run(args, extra = {}) {
   const r = spawnSync('bash', [SCRIPT, ...args], {
     encoding: 'utf8',
@@ -66,9 +88,8 @@ describe('learnings 编号分配器', () => {
 
   it('--claim：占用后同一个号不会再被发出去（claim 进入下一轮可见域）', (t) => {
     if (!has) return t.skip(SKIP)
-    // claims 目录由 next-id.sh 从**脚本自身位置**推出（MAIN_ROOT），故这里也必须落在协议仓根，
-    // 不能指向 cwd 或某个业务仓 —— 脚本在哪，编号账本就跟着在哪。
-    const claims = path.join(SKILL_ROOT, '.learnings-work', 'claims')
+    const claims = claimsDir()
+    assert.ok(claims, `推不出编号账本目录（不在 git 仓里？）—— 判红，判据已失效`)
     const first = run(['LRN', '--claim'])
     const second = run(['LRN', '--claim'])
     try {
@@ -81,7 +102,7 @@ describe('learnings 编号分配器', () => {
         const p = o.out.split('\n')[1]
         if (p && existsSync(p)) rmSync(p, { force: true })
       }
-      assert.ok(existsSync(claims))
+      assert.ok(existsSync(claims), `账本目录未落地：${claims} —— claim 声称成功却没占号`)
     }
   })
 
