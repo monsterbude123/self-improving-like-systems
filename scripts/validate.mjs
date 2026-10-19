@@ -134,6 +134,16 @@ export const REQUIRED_CONFIG_KEYS = [
 export const KILL_SWITCH_KEYS = ['injection', 'capture', 'distill']
 
 /**
+ * 协议自身的配置版本。`config.version` 与之不符即**硬失败**，不静默按新协议解释旧配置。
+ *
+ * 为什么必须 fail-closed（2026-10-19 加固）：静默解释是这类系统最难查的失效形态 ——
+ * 它不报错、不红、不掉帧，只是按你以为的语义跑；等某个字段被按新语义解读、经验召回悄悄变了样，
+ * 只能从「结果不对」这个最外层的现象倒推回来。宁可让接入方升级时看到一条明确的「请迁移」，
+ * 也不要它安静地半兼容。
+ */
+export const PROTOCOL_CONFIG_VERSION = 1
+
+/**
  * 小写连字符名片段（**无锚点**，供组合成完整正则）。
  * registry key（guard_ref）与 skill 目录名（skill_ref 的 `#` 左侧）同属这一形态，
  * 只有一处定义 —— 两处形态若各写一份，迟早漂移（而 skill_ref 的左侧一旦放宽，
@@ -345,6 +355,12 @@ export function validateConfig(config) {
   const out = []
   for (const key of REQUIRED_CONFIG_KEYS) {
     if (!(key in config)) out.push(`config 缺必填段: ${key}`)
+  }
+  // 版本 fail-closed：缺 version 由上面的必填段判红；这里管**在但对不上**。
+  // 严格相等（不做字符串/数字互认）—— 半兼容比不兼容更难查。
+  if ('version' in config && config.version !== PROTOCOL_CONFIG_VERSION) {
+    out.push(`config.version ${JSON.stringify(config.version)} 与协议版本 ${PROTOCOL_CONFIG_VERSION} 不一致`
+      + ` —— 拒绝按新协议解释旧配置，请先迁移该配置`)
   }
   if ('scope' in config) {
     const s = config.scope

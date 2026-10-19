@@ -24,10 +24,31 @@
  * O(1) spawn：全部判定进程内完成，零子进程。
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
+
+/**
+ * 解析协议层脚本目录，查找顺序：**接入项目内 → 全局 → 协议层自身**。
+ *
+ * 为什么需要（2026-10-19 协议层独立成仓后暴露）：原实现只按「项目根/.agents/skills/<name>/scripts」
+ * 这一条硬编路径推。协议层独立成仓并 clone 到全局后，真实安装位置通常是后两者，
+ * 于是体检器在**错误基准**上核对脚本存在性 —— 要么漏判真实缺失，要么对着一片空目录全报不存在。
+ *
+ * 顺序不能反：项目内优先是刻意的 —— 接入方显式 vendor 一份协议层，正是「这个项目要独立演进」
+ * 的信号，全局旧版不该压住它；全局优先会让项目内的改动形同虚设。
+ */
+export function resolveSkillScriptsDir(projectDir) {
+  const rel = path.join('.agents', 'skills', 'self-improving-like-systems', 'scripts')
+  const candidates = []
+  if (projectDir) candidates.push(path.resolve(projectDir, rel))
+  candidates.push(path.join(os.homedir(), '.agents', 'skills', 'self-improving-like-systems', 'scripts'))
+  candidates.push(HERE)
+  for (const c of candidates) if (existsSync(c)) return c
+  return candidates[0]
+}
 
 /** 七事件全集 —— 写错任何一个，钩子永远不触发且**无任何报错**（宿主静默跳过）。 */
 const EVENT_NAMES = [
@@ -161,8 +182,18 @@ function checkHook(h, event, scriptDir) {
   for (const v of PLUGIN_ONLY_VARS) {
     if (body.includes(v)) bad.push(`${event}: 用了插件专有变量 ${v} —— 配置钩子里不展开，会在钩子内部直接报错`)
   }
-  // 脚本存在性只在「路径不含模板变量」时判：路径带 ${ZCODE_PROJECT_DIR} 时宿主要到
-  // 运行期才替换，静态拼不出真实路径，判它「不存在」是纯误报（2026-10-18 实测踩到）。
+  // ① 运行期展开的片段（`${ZCODE_PROJECT_DIR}/.../scripts/<name>`）：路径前缀静态拼不出，
+  //    但**脚本名**是确定的，且协议层目录能被 resolveSkillScriptsDir 解析出来 ——
+  //    所以这条从「一律不判」升级为「按解析到的真实目录核对」。升级前后的差别是：
+  //    旧口径下协议层没装 / 装在别处 / 脚本改名，三种情况体检全绿，钩子运行期才炸。
+  const runtimeScript = /\$\{ZCODE_PROJECT_DIR\}\/[^\s"']*?\bscripts\/([A-Za-z0-9_.-]+\.(?:mjs|cjs|js|sh))/.exec(body)
+  if (runtimeScript && !existsSync(path.resolve(scriptDir, runtimeScript[1]))) {
+    bad.push(`${event}: 片段引用 ${runtimeScript[1]}，但解析出的协议层目录 ${scriptDir} 下没有它 —— 钩子必然失败`
+      + `（协议层未安装、装在别处，或该脚本已改名）`)
+    return bad
+  }
+  // ② 其余带模板变量的路径仍**不**判存在性：只有技能相对形态才可静态核对，
+  //    其他展开路径判「不存在」是纯误报（2026-10-18 实测踩到）。
   if (body.includes('${')) return bad
   const script = /[A-Za-z0-9_./-]+\.(mjs|cjs|js|sh)\b/.exec(body)
   if (script && !existsSync(path.resolve(scriptDir, script[0]))) {
@@ -260,7 +291,7 @@ export function main(argv) {
     let cfg
     try { cfg = JSON.parse(readFileSync(cfgPath, 'utf8')) }
     catch (e) { console.log(`[doctor] ❌ 配置不是合法 JSON：${e.message}`); return 1 }
-    const r = doctorConfig(cfg, path.join(root, '.agents', 'skills', 'self-improving-like-systems', 'scripts'))
+    const r = doctorConfig(cfg, resolveSkillScriptsDir(root))
     if (asJson) { console.log(JSON.stringify({ config: cfgPath, ...r }, null, 2)); return r.problems.length === 0 ? 0 : 1 }
     return renderDoctor(r.problems, r.missing, cfgPath)
   }

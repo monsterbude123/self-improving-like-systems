@@ -22,6 +22,7 @@ import {
   KILL_SWITCH_KEYS,
   OPTIONAL_ENTRY_KEYS,
   OPTIONAL_ENTRY_KEY_TYPES,
+  PROTOCOL_CONFIG_VERSION,
   resolveConfigPath,
   validateConfig,
   validateCoveredEntries,
@@ -339,6 +340,22 @@ describe('配置实例与模板（kill-switch 授权态 + 全键覆盖）', () =
     const violations = validateConfig(broken)
     assert.ok(violations.some((v) => v.includes('kill_switch.injection')), '非布尔必须报')
     assert.ok(violations.some((v) => v.includes('distill')), '缺开关必须报')
+  })
+
+  it('配置版本 fail-closed 三向：匹配绿 / 不匹配红 / 缺失红（防静默按新协议解释旧配置）', () => {
+    const cfg = loadYaml(EXAMPLE_CONFIG)
+    // 绿：与协议版本一致
+    assert.equal(cfg.version, PROTOCOL_CONFIG_VERSION, '示例配置的 version 应等于协议版本')
+    assert.deepEqual(validateConfig(cfg), [])
+    // 红：版本对不上（升级后的旧配置最典型的形态）
+    const older = validateConfig({ ...cfg, version: PROTOCOL_CONFIG_VERSION - 1 })
+    assert.ok(older.some((v) => v.includes('config.version')), '版本不一致必须报')
+    // 红：字符串形态也不认 —— 字符串/数字互认就是半兼容，比不兼容更难查
+    const asStr = validateConfig({ ...cfg, version: String(PROTOCOL_CONFIG_VERSION) })
+    assert.ok(asStr.some((v) => v.includes('config.version')), '"1" 与 1 的形态差异必须判红')
+    // 红：整段缺失（必填段那条判红，不能被这里吞掉）
+    const { version, ...missing } = cfg
+    assert.ok(validateConfig(missing).some((v) => v.includes('version')), '缺 version 必须报')
   })
 })
 

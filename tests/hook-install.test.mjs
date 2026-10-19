@@ -7,7 +7,9 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { doctorConfig } from '../scripts/hook-install.mjs'
+import { doctorConfig, resolveSkillScriptsDir } from '../scripts/hook-install.mjs'
+import { existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -132,12 +134,37 @@ test('脚本不存在 → 报出（无模板变量时才判）', () => {
   assert.ok(has(doctorConfig(cfg, SCRIPTS).problems, /不存在/))
 })
 
-test('脚本路径含模板变量 → **不**报「不存在」（误报防线）', () => {
+test('脚本路径含模板变量 → 解析后的协议层目录里确有该脚本时**不**报「不存在」', () => {
+  // 口径已升级（2026-10-19）：此前是「带 ${} 一律不判」，理由是静态拼不出真实路径。
+  // 现在 resolveSkillScriptsDir 能解析出协议层目录，而**技能相对形态**的脚本名是确定的，
+  // 所以这一类从「不判」升级为「按解析到的真实目录核对」。
+  // 本例正是「确有该脚本 ⇒ 不得误报」的那一极 —— 误报防线没有被削弱。
   const cfg = baseConfig()
   cfg.hooks.events.PostToolUseFailure[0].hooks[0].command =
     'node "${ZCODE_PROJECT_DIR}/.agents/skills/self-improving-like-systems/scripts/capture.mjs" --text -'
   const { problems } = doctorConfig(cfg, SCRIPTS)
-  assert.ok(!has(problems, /不存在/), '带 ${} 时不得判脚本不存在：' + problems.join(' | '))
+  assert.ok(!has(problems, /不存在/), '解析后确实存在时不得误报：' + problems.join(' | '))
+})
+
+test('破坏测试：同一形态但脚本不存在 → 必须报「钩子必然失败」（守卫不得恒绿）', () => {
+  const cfg = baseConfig()
+  cfg.hooks.events.PostToolUseFailure[0].hooks[0].command =
+    'node "${ZCODE_PROJECT_DIR}/.agents/skills/self-improving-like-systems/scripts/no-such-script.mjs" --text -'
+  const { problems } = doctorConfig(cfg, SCRIPTS)
+  assert.ok(has(problems, /必然失败|没有它/), '协议层目录下没有该脚本时必须报出：' + problems.join(' | '))
+})
+
+test('非技能相对形态的模板变量路径仍不判存在性（误报防线未被扩大）', () => {
+  const cfg = baseConfig()
+  cfg.hooks.events.PostToolUseFailure[0].hooks[0].command = 'node "${ZCODE_PROJECT_DIR}/tools/whatever.mjs"'
+  const { problems } = doctorConfig(cfg, SCRIPTS)
+  assert.ok(!has(problems, /不存在/), '非技能相对形态无法静态核对，不得判：' + problems.join(' | '))
+})
+
+test('resolveSkillScriptsDir：命中已解析到的目录，且不假设项目内存在协议层', () => {
+  const dir = resolveSkillScriptsDir(path.join(tmpdir(), 'si-does-not-exist-' + Date.now()))
+  assert.ok(existsSync(dir), `解析结果应是一个真实存在的目录，实际=${dir}`)
+  assert.ok(existsSync(path.join(dir, 'hook-install.mjs')), `解析结果应指向协议层 scripts，实际=${dir}`)
 })
 
 test('缺 hooks 段 / 缺 events 段 → 各自报出', () => {
