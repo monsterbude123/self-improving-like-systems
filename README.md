@@ -75,7 +75,8 @@ node ~/.agents/skills/self-improving-like-systems/scripts/run-tests.mjs
 ```
 
 在哪个目录跑都一样 —— 它按自身位置找 `tests/`，不按 cwd。
-当前基线：`388 tests · 388 pass · 0 fail · 0 skipped`，零外部依赖（无 `node_modules`，无包管理器）。
+判据条数以这条命令的输出为准（本文档**不**复述一个会过期的数字：手写的计数本身就是判据的第二份，
+每次增删用例都会悄悄过期，而过期的绿灯比没有数字更糟）。零外部依赖（无 `node_modules`，无包管理器）。
 
 > 自己接了协议层的项目，`package.json` 里指向这个脚本而不是指向协议层里的某个路径：
 > npm 脚本失败常被 CI 当成「不稳定」跳过，于是**静默失去全部回归保护**。
