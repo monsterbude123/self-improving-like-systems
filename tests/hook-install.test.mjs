@@ -8,7 +8,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { doctorConfig, resolveSkillScriptsDir } from '../scripts/hook-install.mjs'
-import { existsSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -205,4 +206,37 @@ test('破坏测试自检：一个千疮百孔的配置必须报出多条问题',
   }
   const { problems } = doctorConfig(broken, SCRIPTS)
   assert.ok(problems.length >= 6, `应报出 >=6 条，实际 ${problems.length}：${problems.join(' | ')}`)
+})
+
+// ===== 片段形状对拍：片段、权威 snippet、doctor 判据必须是同一个契约 =====
+// 2026-10-19 实测踩到：片段把 events.<Event> 吐成对象，而宿主契约、references/hook-wiring.json
+// 与 doctorConfig 判据三处都是数组。同事照官方路径接线 → `--doctor` 报五条「事件值必须是数组」；
+// 若直接并进真实配置则不被宿主匹配 → 静默零投递。这条对拍就是防它退回去的。
+test('片段的每个事件值都是数组，且与 references/hook-wiring.json 同形', () => {
+  const r = spawnSync(process.execPath, [path.join(SCRIPTS, 'hook-install.mjs')], { encoding: 'utf8', timeout: 60_000 })
+  assert.equal(r.status, 0, r.stderr)
+  const end = r.stdout.indexOf('\n}\n')
+  assert.notEqual(end, -1, `片段不是可解析的 JSON：\n${r.stdout.slice(-400)}`)
+  const snippet = JSON.parse(r.stdout.slice(0, end + 3))
+  const authority = JSON.parse(readFileSync(path.join(SKILL_ROOT, 'references', 'hook-wiring.json'), 'utf8'))
+
+  for (const [event, value] of Object.entries(snippet.hooks.events)) {
+    assert.ok(Array.isArray(value), `${event} 的值不是数组 —— 宿主按数组匹配，吐对象会静默零投递`)
+    assert.ok(value.length > 0 && Array.isArray(value[0].hooks), `${event} 缺 hooks 数组`)
+  }
+  // 片段覆盖的每个事件，权威 snippet 里也必须是同一种形状（数组）
+  for (const event of Object.keys(snippet.hooks.events)) {
+    if (!(event in authority.events)) continue
+    assert.ok(Array.isArray(authority.events[event]), `权威 snippet 的 ${event} 不是数组，与片段不一致`)
+  }
+})
+
+test('片段并进配置后 doctor 零问题（片段本身就是可接线的）', () => {
+  const project = mkdtempSync(path.join(tmpdir(), 'si-snippet-'))
+  const r = spawnSync(process.execPath, [path.join(SCRIPTS, 'hook-install.mjs'), '--project-dir', project], { encoding: 'utf8', timeout: 60_000 })
+  const end = r.stdout.indexOf('\n}\n')
+  mkdirSync(path.join(project, '.zcode'), { recursive: true })
+  writeFileSync(path.join(project, '.zcode', 'config.json'), r.stdout.slice(0, end + 3), 'utf8')
+  const { problems } = doctorConfig(JSON.parse(readFileSync(path.join(project, '.zcode', 'config.json'), 'utf8')), SCRIPTS)
+  assert.deepEqual(problems, [], `官方片段自己过不了自家体检：${problems.join(' | ')}`)
 })

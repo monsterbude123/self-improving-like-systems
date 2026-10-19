@@ -100,16 +100,21 @@ function resolveWorkDir(projectDir) {
 function snippets(projectDir = null) {
   const S = '${ZCODE_PROJECT_DIR}/.agents/skills/self-improving-like-systems/scripts'
   const W = projectDir ? resolveWorkDir(projectDir) : '${ZCODE_PROJECT_DIR}'
+  // 每个事件的值是**数组**（一组匹配组），不是单个对象 —— 宿主的 `hooks.events.<Event>`
+  // 契约就是数组，本仓在跑的 `.zcode/config.json` 与权威形态 `references/hook-wiring.json`
+  // 也都是数组。此前这里吐的是对象，形状与宿主、与自己的 doctorConfig 判据三方对不上：
+  // 同事照着「跑 hook-install 并入片段」这条官方路径接线，再跑 `--doctor` 会拿到五条
+  // 「事件值必须是数组」，而片段本身若并进真实配置则不会被宿主匹配到 —— 静默零投递。
   return {
-    SessionStart: {
+    SessionStart: [{
       hooks: [{
         type: 'command',
         command: `node "${S}/hook-session-start.mjs" --project-dir "\${ZCODE_PROJECT_DIR}"`,
         timeout: 10,
         statusMessage: '预加载相关经验条目',
       }],
-    },
-    PostToolUse: {
+    }],
+    PostToolUse: [{
       matcher: 'Bash|Write|Edit|NotebookEdit|MultiEdit|ApplyPatch',
       hooks: [{
         type: 'command',
@@ -117,8 +122,8 @@ function snippets(projectDir = null) {
         timeout: 5,
         statusMessage: '记录工具事件用于批次节奏对账',
       }],
-    },
-    PostToolUseFailure: {
+    }],
+    PostToolUseFailure: [{
       hooks: [{
         type: 'command',
         command: `node "${S}/capture.mjs" --source tool --kind tool_error --severity error `
@@ -126,23 +131,23 @@ function snippets(projectDir = null) {
         timeout: 10,
         statusMessage: '记录本轮工具失败为经验系统事件',
       }],
-    },
-    UserPromptSubmit: {
+    }],
+    UserPromptSubmit: [{
       hooks: [{
         type: 'command',
         command: `node "${S}/hook-user-correction.mjs"`,
         timeout: 15,
         statusMessage: '捕获用户纠正信号',
       }],
-    },
-    Stop: {
+    }],
+    Stop: [{
       hooks: [{
         type: 'command',
         command: `node "${S}/distill.mjs" --project-dir "\${ZCODE_PROJECT_DIR}"`,
         timeout: 10,
         statusMessage: '蒸馏本轮失效事件为经验草案',
       }],
-    },
+    }],
   }
 }
 
