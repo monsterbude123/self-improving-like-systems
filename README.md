@@ -46,6 +46,28 @@ git clone https://github.com/monsterbude123/self-improving-like-systems.git \
 > 不要用宿主的 skill 安装器分发本仓：它的降级路径只复制 `SKILL.md`，
 > 会丢掉 19 个脚本 —— skill 加载得起来，而每处 `node xxx.mjs` 都是死路径。
 
+### 分发来源只有一条
+
+本仓的读者是别人，因此**任何一份文档里的安装来源都指向 GitHub**，
+不得出现指向某台机器的磁盘路径 —— 那种路径在接盘者自己的机器上必然失败，
+而排查成本全落在他们身上。
+
+`tests/no-local-path.test.mjs` 盯着这条：往 `README.md` / `SKILL.md` / `references/**` /
+`scripts/**` 里写进「盘符 + 工作区目录」或「盘符 + 真实用户名」的绝对路径会被当场拦下
+（判据形态写在守卫的注释里，这里不复述 —— 复述会把守卫自己要拦的字面量写进扫描面）。
+`tests/` 下的合成夹具按设计不在扫描面内 —— 它们长得像真路径正是其作用。
+
+### 为什么不开 npm 包
+
+本仓是零第三方依赖的纯 `.mjs` + markdown：没有 `node_modules`、没有 `package.json`、
+自检零依赖跑全。发 npm 包解决不了任何实际问题，引入的却是一条要长期维护的分发通道
+（版本策略 / 弃用流程 / 发布权限），收益与成本不成比例。
+
+更要紧的是它与「单一来源」直接冲突：一旦有了 npm，`git clone` 与 `npm i` 两条路
+就会各自漂移，而本仓的协议判据要求全网只有一份。
+
+**判断留档于 `tests/no-local-path.test.mjs` 的注释**，避免日后有人「顺手补一个 npm」。
+
 ## 自检
 
 ```bash
