@@ -5,9 +5,11 @@
 # 那是「宿主项目的运行时目录」语义，协议仓不该把它提交进去。
 .learnings-work/
 
-# 事件 / 审计 / 守卫态：同理，属接入项目的运行时数据
+# 事件 / 审计 / 守卫态 / 日志：同理，属接入项目的运行时数据
+# （logs/ 是诊断面而非证据账，但它同样只属于「谁在跑」—— 协议仓自身不产生日志）
 .self-improving/events/
 .self-improving/proposals/
+.self-improving/logs/
 .self-improving/guard-state.json
 .self-improving/audit.jsonl
 
