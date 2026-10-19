@@ -1,0 +1,28 @@
+# 注入引擎 fixture 配置 · 结构违规（YAML 可解析但缺 kill_switch 段 → fail-open 走本文件 audit_log）
+version: 1
+
+scope:
+  values: [infra, testing, git, data-ui, model, kb, other]
+  default: other
+
+injection:
+  top_k: 5
+  budget_chars: 400
+  budget_ms: 300
+  timeout_ms: 3000
+
+retire:
+  cycle_days: 90
+
+storage:
+  entries_dir: entries/
+  events_dir: events/
+  proposals_dir: proposals/
+  registry: registry.yaml
+  audit_log: audit/audit.jsonl
+
+event_sources:
+  - gate
+  - hook
+  - tool
+  - manual

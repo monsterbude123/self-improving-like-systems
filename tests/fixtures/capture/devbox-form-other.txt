@@ -1,0 +1,1 @@
+docker EACCES: permission denied while opening /workspace/app/.worktrees/demo/data/secret.json token 9f2ab1cd

@@ -1,0 +1,14 @@
+# lifecycle fixture registry —— 一个守卫覆盖三条条目（观测账 / 命中账的来源）
+guards:
+  - key: guard-fixture-dup-token
+    args: ['.agents/skills/self-improving-like-systems/scripts/run-guard.mjs', '--key', 'guard-fixture-dup-token']
+    when: always
+    kind: gate
+    path: 'guards/dup-token.mjs'
+    # 夹具守卫用 node 而非 bash：判据/退出码与解释器无关，但 bash spawn 在本机满载下能超过
+    # run-guard 的 10s GUARD_TIMEOUT_MS（ETIMEDOUT → fail-open 记 error → 不计绿 →
+    # 「连跑 N 次攒 blocking」的用例会间歇性变红）。详见 guards/dup-token.mjs 头部注释。
+    command: ['node', 'guards/dup-token.mjs']
+    covered_entries: ['LRN-20261016-010', 'LRN-20261016-011', 'ERR-20261016-012']
+    mode: shadow
+    shadow_required: 3

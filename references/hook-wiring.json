@@ -1,0 +1,30 @@
+{
+  "$comment": [
+    "SessionStart 接线片段（唯一权威形态，tests/hook.test.mjs 直接读本文件执行验收）。",
+    "接入方式：把下面 events.SessionStart 整段**追加**进项目 <项目根>/.zcode/config.json 的",
+    "hooks.events 下 —— 只增不改：同层已有的其他事件条目（如同宿主会话规则管道）一律不动。",
+    "把 <SKILL_DIR> 换成本技能目录的绝对路径；${ZCODE_PROJECT_DIR} 由 ZCode 在会话启动时展开。",
+    "timeoutMs 必须 ≥ config.injection.timeout_ms 且 ≫ budget_ms（量级断言见 tests/hook.test.mjs）。",
+    "kill_switch.injection=false 时该命令输出为空、exit 0 —— 接线存在不等于功能开启。"
+  ],
+  "events": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "process",
+            "command": "node",
+            "enabled": true,
+            "statusMessage": "预加载相关经验条目",
+            "args": [
+              "<SKILL_DIR>/scripts/hook-session-start.mjs",
+              "--project-dir",
+              "${ZCODE_PROJECT_DIR}"
+            ],
+            "timeoutMs": 10000
+          }
+        ]
+      }
+    ]
+  }
+}

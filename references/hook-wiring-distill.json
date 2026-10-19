@@ -1,0 +1,35 @@
+{
+  "$comment": [
+    "蒸馏触发片段（票 09）。**当前状态：只出片段，默认不接线** —— 宿主 ZCode 的 hook 事件只有",
+    "SessionStart / UserPromptSubmit / PreToolUse / PermissionRequest / PostToolUse /",
+    "PostToolUseFailure / Stop 七个，**没有 SessionEnd**（Notification / SubagentStop / PreCompact 同样不支持）。",
+    "故本片段用语义最接近的 Stop（一次助手回合结束）作为降级触发面，并给出降级代价的说明；",
+    "是否接线由人工裁决，不在本票自动落 .zcode/config.json。",
+    "",
+    "把 <SKILL_DIR> 换成本技能目录的绝对路径；${ZCODE_PROJECT_DIR} 由 ZCode 展开。",
+    "Stop 每回合都会触发，因此依赖 distill.mjs 的幂等（同名同内容 → unchanged，不重写）",
+    "与 kill_switch.distill=false 的零副作用；两者任一生效时本接线都是零成本。",
+    "蒸馏摘要走 stderr，stdout 默认恒空 —— 宿主把 stdout 当严格 JSON schema 解析，多一个键就判失败。",
+    "kill_switch.distill=false 时该命令 exit 0、零写盘 —— 接线存在不等于功能开启。"
+  ],
+  "events": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "process",
+            "command": "node",
+            "enabled": true,
+            "statusMessage": "蒸馏本轮失效事件为经验草案",
+            "args": [
+              "<SKILL_DIR>/scripts/distill.mjs",
+              "--project-dir",
+              "${ZCODE_PROJECT_DIR}"
+            ],
+            "timeoutMs": 10000
+          }
+        ]
+      }
+    ]
+  }
+}

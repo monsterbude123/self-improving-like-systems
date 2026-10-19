@@ -1,0 +1,33 @@
+# 注入引擎 fixture 配置 · 正向（kill-switch 开启用于功能测试；实例配置默认 false 不受影响）
+version: 1
+
+scope:
+  values: [infra, testing, git, data-ui, model, kb, other]
+  default: other
+
+injection:
+  top_k: 1            # 正向断言兼测 top_k 封顶：infra 命中 2 条只出 1 条
+  budget_chars: 400   # 足够放下完整块（不触发降级）
+  budget_ms: 300
+  timeout_ms: 3000
+
+retire:
+  cycle_days: 90
+
+storage:
+  entries_dir: entries/
+  events_dir: events/
+  proposals_dir: proposals/
+  registry: registry.yaml
+  audit_log: audit/audit.jsonl   # 审计落 fixture 目录（测试整体拷到临时目录后断言）
+
+event_sources:
+  - gate
+  - hook
+  - tool
+  - manual
+
+kill_switch:
+  injection: true
+  capture: false
+  distill: false

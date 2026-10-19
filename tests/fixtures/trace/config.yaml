@@ -1,0 +1,40 @@
+# trace fixture 配置 —— 一条完整走完六拍的真实形态实例（供 tests/trace.test.mjs 复用）
+#
+# 路径刻意**不**沿用任何真实仓的布局（真实仓的事件/状态区是本地 gitignored 的）:
+# 夹具本身必须可入仓、可被他人复现，路径形态与协议一致即可（storage.* 一律相对仓根）。
+version: 1
+
+scope:
+  values: [infra, testing, git, data-ui, model, kb, other]
+  default: other
+
+injection:
+  top_k: 5
+  budget_chars: 2000
+  budget_ms: 300
+  timeout_ms: 3000
+
+retire:
+  cycle_days: 90
+
+hook:
+  default_scopes: [infra, testing]
+
+storage:
+  entries_dir: entries/
+  events_dir: work/events/
+  proposals_dir: work/proposals/
+  registry: registry.yaml
+  guard_state: work/guard-state.json
+  audit_log: work/audit/injection-audit.jsonl
+
+event_sources:
+  - gate
+  - hook
+  - tool
+  - manual
+
+kill_switch:
+  injection: false
+  capture: false
+  distill: false

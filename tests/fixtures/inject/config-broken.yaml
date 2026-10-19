@@ -1,0 +1,6 @@
+# 注入引擎 fixture 配置 · YAML 损坏（解析必失败 → fail-open：空块 + 审计 + exit 0）
+version: 1
+scope:
+  values: [infra, testing
+  default: other
+kill_switch: {{{

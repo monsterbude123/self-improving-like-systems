@@ -1,0 +1,6 @@
+# trace 夹具注册表 —— 一条真守卫（声明 covered_entries，可追溯的覆盖声明）
+guards:
+  - key: guard-fixture-trace-chain
+    args: ['scripts/gates/fixture-chain.sh']
+    when: always
+    covered_entries: [LRN-20261016-001]

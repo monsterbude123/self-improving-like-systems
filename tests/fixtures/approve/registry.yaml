@@ -1,0 +1,9 @@
+# registry fixture —— 批准前的空表（approve 走文本追加，注释必须原样留存）
+#
+# 债务桩：形似 registry 实体字段齐全的登记项，但它指向绑定门禁自身而非任何针对条目内容的判据，
+# 派发时按 mode=debt-stub 跳过 —— 「注册表里有条目」不等于「这条债有人看着」。
+guards:
+  - key: legacy-unbound
+    args: ['scripts/gates/D13-entry-guard-binding.mjs']
+    when: always
+    mode: debt-stub

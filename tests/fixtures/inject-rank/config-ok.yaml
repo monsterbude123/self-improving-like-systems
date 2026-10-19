@@ -1,0 +1,34 @@
+# 注入排序 fixture 配置（票 H1 · 排序信号非全平）
+# 与 inject/ fixture 唯一的差别：top_k 放开到 3、预算放开 —— 否则顺序差异被封顶/降级吃掉，看不见。
+version: 1
+
+scope:
+  values: [infra, testing, git, data-ui, model, kb, other]
+  default: other
+
+injection:
+  top_k: 3            # 排序 fixture 专用：放开封顶，否则顺序差异看不见
+  budget_chars: 4000  # 放开预算：不触发降级，保证块内含完整出处行
+  budget_ms: 300
+  timeout_ms: 3000
+
+retire:
+  cycle_days: 90
+
+storage:
+  entries_dir: entries/
+  events_dir: events/
+  proposals_dir: proposals/
+  registry: registry.yaml
+  audit_log: audit/audit.jsonl   # 审计落 fixture 目录（测试整体拷到临时目录后断言）
+
+event_sources:
+  - gate
+  - hook
+  - tool
+  - manual
+
+kill_switch:
+  injection: true
+  capture: false
+  distill: false

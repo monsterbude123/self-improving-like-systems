@@ -1,0 +1,39 @@
+# approve fixture 配置 · on（capture/distill/injection 全开，六拍重放要真跑通）
+# 路径一律相对本 fixture 根目录（--config 指到本文件 → baseDir = 本目录）。
+version: 1
+
+scope:
+  values: [infra, testing, git, data-ui, model, kb, other]
+  default: other
+
+injection:
+  top_k: 5
+  budget_chars: 800
+  budget_ms: 300
+  timeout_ms: 3000
+
+retire:
+  cycle_days: 90
+
+hook:
+  default_scopes: [infra]
+
+storage:
+  entries_dir: entries/
+  events_dir: events/
+  proposals_dir: proposals/
+  registry: registry.yaml
+  # 运行时字段（shadow 计数等）落本地状态文件；缺省也落在 events/ 同级，此处显式声明便于断言。
+  guard_state: guard-state.json
+  audit_log: audit/audit.jsonl
+
+event_sources:
+  - gate
+  - hook
+  - tool
+  - manual
+
+kill_switch:
+  injection: true
+  capture: true
+  distill: true

@@ -1,0 +1,38 @@
+# hook fixture 配置 · 时间预算极小（budget_ms=5）
+# 触发方式：用例在临时目录批量生成数百条条目（读取耗时必然远超 5ms），
+# 保证「超时间预算 → 仅标题行降级」在 CI 与宿主上都稳定复现（不用 sleep 赌时序）。
+version: 1
+
+scope:
+  values: [infra, testing, git, data-ui, model, kb, other]
+  default: other
+
+injection:
+  top_k: 5
+  budget_chars: 800
+  budget_ms: 5
+  timeout_ms: 3000
+
+retire:
+  cycle_days: 90
+
+hook:
+  default_scopes: [infra]
+
+storage:
+  entries_dir: entries/
+  events_dir: events/
+  proposals_dir: proposals/
+  registry: registry.yaml
+  audit_log: audit/audit.jsonl
+
+event_sources:
+  - gate
+  - hook
+  - tool
+  - manual
+
+kill_switch:
+  injection: true
+  capture: false
+  distill: false

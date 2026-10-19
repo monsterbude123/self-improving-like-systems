@@ -1,0 +1,1 @@
+docker ENOENT: build context not found at /workspace/app/.worktrees/demo/scripts/gates/D13-entry-guard-binding.mjs:42 after 1200ms

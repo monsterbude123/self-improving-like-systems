@@ -1,0 +1,33 @@
+# 注入引擎 fixture 配置 · kill-switch off（off 态断言：零输出 + 零副作用 + 不写审计）
+version: 1
+
+scope:
+  values: [infra, testing, git, data-ui, model, kb, other]
+  default: other
+
+injection:
+  top_k: 5
+  budget_chars: 400
+  budget_ms: 300
+  timeout_ms: 3000
+
+retire:
+  cycle_days: 90
+
+storage:
+  entries_dir: entries/
+  events_dir: events/
+  proposals_dir: proposals/
+  registry: registry.yaml
+  audit_log: audit/audit.jsonl
+
+event_sources:
+  - gate
+  - hook
+  - tool
+  - manual
+
+kill_switch:
+  injection: false
+  capture: false
+  distill: false

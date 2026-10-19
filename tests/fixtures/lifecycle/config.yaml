@@ -1,0 +1,41 @@
+# lifecycle fixture 配置 · 生命周期三动作（sweep / retire / restore）
+# 路径一律相对本 fixture 根目录（--config 指到本文件 → baseDir = 本目录）。
+version: 1
+
+scope:
+  values: [infra, testing, git, data-ui, model, kb, other]
+  default: other
+
+injection:
+  top_k: 5
+  budget_chars: 800
+  budget_ms: 300
+  timeout_ms: 3000
+
+retire:
+  # 退役判定周期压到 30 天，让「长期不响」的 fixture 事实（观测账 last_observed 远早于今天）可判。
+  cycle_days: 30
+
+hook:
+  default_scopes: [infra]
+
+storage:
+  entries_dir: entries/
+  events_dir: events/
+  proposals_dir: proposals/
+  registry: registry.yaml
+  guard_state: guard-state.json
+  # 退役区显式声明（缺省推导 = <entries_dir>/archive/，由「退役区缺省推导」用例单独覆盖）。
+  archive_dir: archive/
+  audit_log: audit/audit.jsonl
+
+event_sources:
+  - gate
+  - hook
+  - tool
+  - manual
+
+kill_switch:
+  injection: true
+  capture: true
+  distill: true

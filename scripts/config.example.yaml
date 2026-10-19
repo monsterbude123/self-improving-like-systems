@@ -1,0 +1,119 @@
+# config.example.yaml —— 经验/自进化系统配置 · 全键示例（技能自带模板，非项目实例）
+#
+# 角色：一切消费方（门禁 / 注入 / 事件捕获 / 蒸馏 / 退役）从配置读取运行参数。
+#   字段契约见 ../references/schema.md；结构校验器 = 同目录 validate.mjs
+#   （scope 枚举与 kill-switch 类型由它强制）。
+#
+# ===== 接入方式（每个项目自行替换）=====
+#   1. 把本文件复制到**仓库根**并改名 `.self-improving.yaml`（或 env SELF_IMPROVING_CONFIG 指向别处；
+#      `--config` 参数优先级最高）；
+#   2. 按项目事实替换 scope.values（条目主题分组）、storage.*（路径布局）等键；
+#   3. kill_switch 三开关是**行为开关**：默认 false；开启 = 允许对应功能产生副作用，
+#      须项目内显式授权后才可改 true。开关必须先于它防的风险（对应功能接线）存在。
+#
+# 路径口径：storage.* 一律相对**本配置文件所在目录**解析（不是仓库根、也不是 cwd）——
+#   一份配置 + 它描述的数据因此构成可移植的自包含包，且与调用方 cwd 解耦。
+#   仓内配置放在仓库根，该口径与「相对仓库根」恰好等价；只有把配置放到仓外时两者才分岔。
+# 示例，随项目替换 —— 本文件所有取值都是模板默认，不代表任何项目的最终配置。
+
+version: 1
+
+scope:
+  # 合法 scope 枚举 = Entry frontmatter `scope` 字段的唯一依据
+  # （validate.mjs 从这里读，不硬编码第二份）。取值 = 项目自定的主题分组，
+  # 建议与项目条目语料的既有分类事实同构（示例分组含义：基础设施 / 测试质量 /
+  # 版本控制协作 / 数据与界面 / 模型路由计费 / 域知识速查 / 其余未归类）。
+  values: [infra, testing, git, data-ui, model, kb, other]
+  # 未指定 scope 时的回落值：建议选一个**永不自动注入**的桶
+  # （fail-safe —— 宁可不注入也不误注入；scope=default 的条目不出现在注入输出的对偶面）。
+  default: other
+
+injection:
+  top_k: 5            # 单次注入条目数上限
+  budget_chars: 2000  # 注入块字符预算：超预算降级为标题行列表
+  budget_ms: 300      # 注入自身的时间预算（读路径必须在该时间内给出结果，否则降级）
+  timeout_ms: 3000    # hook 外层超时上限；应满足 budget_ms ≪ timeout_ms（量级断言）
+  # ===== 召回排序（加权打分；三因子口径见 schema.md §1.4，权重可按项目调）=====
+  # score = w.relevance·relevance + w.importance·importance + w.recency·recency，各因子归一到 [0,1]。
+  # relevance  关键词命中数按 saturation 饱和。**没有查询时（SessionStart 尚无 prompt）本因子恒 0**，
+  #            排序让位给另两个 —— 而不是拿 0 跟别人的非 0 相比。
+  # importance 0.6·recurrence 归一（对数压缩）+ 0.4·status 归一。recurrence 是「被现实攻击过」的
+  #            次数，与内容无关的硬证据，故占大头。
+  # recency    0.5 ** (ageDays / half_life_days)，指数半衰。日期取 last_verified_at ?? date；
+  #            皆无时取 0.5 中位值（「不知道多老」≠「最老」，取 0 会让存量条目永远沉底）。
+  ranking:
+    weights:
+      relevance: 0.55   # 相关性主导：不对题的教训是噪音
+      importance: 0.30  # 重要度次之：被现实反复攻击过的先想起
+      recency: 0.15     # 新近度只做破平，否则系统会朝「最后写的」漂移
+    relevance_saturation: 3      # 命中 3 次即视为满相关（再多不加分）
+    importance_saturation: 8     # recurrence 对数压缩到 8 次封顶
+    recency_half_life_days: 30   # 半衰期：30 天前的条目新近度权重减半
+
+retire:
+  # 退役判定周期（自然日）：**观测账**（§3.1）里条目 `last_observed` 超过该天数未被守卫派发覆盖、
+  # 且累计 `wild_hits === 0`（守卫长期在野外不响）→ 进退役判定。
+  # ⚠ 人造的破坏测试命中（`run-guard.mjs --probe`，记在 `probe_hits`）**不算**「响过」，也**不能**当退役证据；
+  #   `legacy_hits`（分型前的历史命中，来源不可知）一律拒绝退役。口径见 references/schema.md §3.1.1 / §3.3。
+  # 证据不足（从未被覆盖 / 有待回写命中 / 账损坏）一律不退役 —— 判定口径见 references/schema.md §3.3。
+  # 这个数同时是「探针证据有效期」（trace 拍5 的 probe 路径），单一出处 = verify.mjs 的 retireCycleDays。
+  cycle_days: 90
+
+hook:
+  # SessionStart 预加载的**默认域**（hook 在会话启动时还没有 prompt，域无从推断，
+  # 由项目声明一个保守默认）。取值须 ∈ scope.values，且**不得**含 scope.default 桶
+  # （该桶永不注入）。模板默认空数组 = 不注入（零噪音优先：漏掉的域还有 prompt 侧兜底，
+  # 噪音进上下文是不可逆的预算损耗）。事件捕获的触发式检索复用同一份取值。
+  default_scopes: []
+
+storage:
+  # 条目 = 仓内 git-tracked（永久知识库，命名门禁与条目门禁的管辖范围）
+  entries_dir: .self-improving/entries/
+  # 事件 JSONL = 本地 gitignored（写入后 git status 必须干净 —— 由项目侧 ignore/exclude 保证）
+  events_dir: .self-improving/events/
+  # 蒸馏提案暂存区 = 本地 gitignored（草案只落提案暂存区，正式区 git status 干净）
+  proposals_dir: .self-improving/proposals/
+  # 守卫注册表（项目实例数据：守卫属于具体仓库；技能只带 registry.example.yaml）
+  registry: .self-improving/registry.yaml
+  # 守卫运行时状态（shadow 计数 / last_run / last_result / mode + §3.1 条目观测账）= 本地 gitignored：
+  # 每次 commit 都变的字段写进 registry 只会造成仓内 churn；缺省取 dirname(events_dir)/guard-state.json
+  guard_state: .self-improving/guard-state.json
+  # 退役区（verify.mjs --retire 的落位 / --restore 的来源）= 整文件移动，内容不改；
+  # 缺省取 <entries_dir>/archive/（条目区根层扫描不递归，故天然不在各门禁管辖面内）。
+  # 注意：若该路径被本地 exclude 排除，退役条目即脱离 git 跟踪（正文仍在归档文件与 git 历史里，可一键 restore）。
+  archive_dir: .self-improving/entries/archive/
+  # 注入/读路径审计 JSONL = 本地 gitignored（须由项目侧 ignore/exclude 保证；与 events 同级纪律）
+  # 缺本键时注入引擎回退 <os tmpdir>/self-improving-injection-audit.jsonl（fail-open 兜底）
+  # ⚠️ 下面这个默认值**不可照抄**：它落在 `.self-improving/`（该目录装 registry.yaml，是 git-tracked），
+  #    而审计日志是运行时数据、必须 gitignored。照抄的后果实测过：任何一次探针跑完，
+  #    `git status` 就多出一个 `?? .self-improving/audit.jsonl`，仓内立刻不干净。
+  #    项目复制本模板后**必须**把本键改成自己仓里已被 ignore 的路径（事件/审计/守卫态同一条纪律）。
+  audit_log: .self-improving/audit.jsonl
+
+logging:
+  # 诊断日志（**不是审计**）：审计是六拍的证据账、append-only 绝不滚动；日志是给人和后续
+  # agent 看的诊断面（「现在是不是在工作」「刚才那次卡在哪」），所以才要分级 + 按大小滚动。
+  # 查询面：log-query.mjs --stats / --trace <id> / --cycle <entry_id|guard_key|fingerprint> / --errors
+  enabled: true
+  level: info        # debug|info|warn|error；低于此级别直接丢弃、不构造消息（热路径纪律）
+  dir: .learnings-work/logs/     # **必须**是 gitignored 路径
+  max_bytes: 2097152             # 单文件 2MB 触发滚动
+  max_files: 5                   # 保留 si.log.1 … si.log.5
+  trace_enabled: true            # 结构化轨迹（按天分片 si-trace-YYYYMMDD.jsonl），log-query 靠它串联
+  trace_max_bytes: 5242880
+  trace_max_files: 3
+
+event_sources:
+  # 事件源白名单：source 不在本表内的事件一律拒收（防事件库被任意写入污染）。
+  - gate    # 门禁拦截输出（guard 的 FAIL 输出）
+  - hook    # hook 生命周期事件（SessionStart 等）
+  - tool    # 工具 / 命令失败
+  - manual  # 手动 CLI 捕获（宿主缺事件源时的降级路径）
+
+kill_switch:
+  # 三开关默认全 off —— 开关必须先于它防的风险存在（对应功能接线后才谈得上开）。
+  # 「off 时对应功能零副作用」的功能级断言归属各自接线阶段（injection / capture / distill）。
+  # 本技能只保证：开关存在、默认 false、validate.mjs 能识别非法值（非布尔/缺失/未知键）。
+  injection: false
+  capture: false
+  distill: false

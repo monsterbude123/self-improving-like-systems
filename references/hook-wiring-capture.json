@@ -1,0 +1,50 @@
+{
+  "$comment": [
+    "错误事件捕获片段（票 10 补齐）。**当前状态：只出片段，默认不接线** —— 本文件是机器本地",
+    ".zcode/config.json（该文件在本仓被 exclude 排除）的**待应用片段**，由主代理在合入主仓后手工写入；",
+    "不要在本检出改它，那会指向尚未合入的路径。",
+    "",
+    "事件选择：宿主 ZCode 的 hook 事件里没有「命令失败」专用事件，最接近的是 PostToolUseFailure",
+    "（工具调用失败后触发）。相比退化到 PostToolUse（成功也触发）它不产生噪音，是本系统要的形态。",
+    "若某宿主版本没有 PostToolUseFailure，退化方案：PostToolUse + 在命令里判断失败文本，",
+    "或直接由调用方在失败分支显式跑 capture.mjs（event_sources 里的 tool/manual 即为此留的白名单）。",
+    "",
+    "接入方式：把下面 events.PostToolUseFailure 整段**追加**进项目 <项目根>/.zcode/config.json 的",
+    "hooks.events 下 —— 只增不改，同层已有条目一律不动。",
+    "命令路径里的 <repo> 换成本仓根（片段只出片段，不代写 .zcode/config.json）。",
+    "capture.mjs 靠配置链自行定位仓根（--config > env SELF_IMPROVING_CONFIG > 仓根实例配置），",
+    "所以不需要 --project-dir；钩子 cwd 在项目内即可。",
+    "",
+    "为什么默认不接线：capture 写事件库（config.storage.events_dir，本地 gitignored），",
+    "是蒸馏与对账的输入。接线存在 ≠ 功能开启 —— kill_switch.capture=false 时该命令零写盘、零检索、",
+    "exit 0。接线与开关是两件事，先接线后授权开开关。",
+    "stdout：capture 默认打检索注入块；宿主把钩子 stdout 当上下文注入，用 --no-block 关掉即可（仍 exit 0）。"
+  ],
+  "events": {
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "process",
+            "command": "node",
+            "enabled": true,
+            "statusMessage": "记录本轮工具失败为经验系统事件",
+            "args": [
+              "<repo>/.agents/skills/self-improving-like-systems/scripts/capture.mjs",
+              "--source",
+              "tool",
+              "--kind",
+              "tool_error",
+              "--severity",
+              "error",
+              "--text",
+              "-",
+              "--no-block"
+            ],
+            "timeoutMs": 10000
+          }
+        ]
+      }
+    ]
+  }
+}

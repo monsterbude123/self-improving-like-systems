@@ -1,0 +1,37 @@
+# 违规配置 fixture：kill_switch.injection 被写成字符串 "on"（非布尔）。
+# 期望：validate.mjs --config <本文件> ... → exit 1，
+#       输出含 `config.kill_switch.injection 必须是布尔值`。
+# 其余配置段与 scripts/config.example.yaml 保持一致 —— 只允许 kill-switch 这一处违规，
+# 否则「违规原因指向 kill-switch」的断言就分不清是哪条规则在起作用。
+
+version: 1
+
+scope:
+  values: [infra, testing, git, data-ui, model, kb, other]
+  default: other
+
+injection:
+  top_k: 5
+  budget_chars: 2000
+  budget_ms: 300
+  timeout_ms: 3000
+
+retire:
+  cycle_days: 90
+
+storage:
+  entries_dir: .self-improving/entries/
+  events_dir: .self-improving/events/
+  proposals_dir: .self-improving/proposals/
+  registry: .self-improving/registry.yaml
+
+event_sources:
+  - gate
+  - hook
+  - tool
+  - manual
+
+kill_switch:
+  injection: "on"   # ← 唯一的违规点：必须是布尔 false
+  capture: false
+  distill: false
