@@ -1,0 +1,18 @@
+# 运行时数据（协议层自身**不持有**这些，它们属于接入项目；此处只挡住测试跑出来的副作用）
+#
+# 出现原因：tests/next-id.test.mjs 的 claim 用例会真的向 next-id.sh 申请编号，而脚本从
+# **自身位置**推出 MAIN_ROOT —— 协议层独立成仓后，账本就落在本仓 `.learnings-work/` 下。
+# 那是「宿主项目的运行时目录」语义，协议仓不该把它提交进去。
+.learnings-work/
+
+# 事件 / 审计 / 守卫态：同理，属接入项目的运行时数据
+.self-improving/events/
+.self-improving/proposals/
+.self-improving/guard-state.json
+.self-improving/audit.jsonl
+
+# 日志
+*.log
+
+# Node（协议层是零依赖的纯 .mjs，node_modules 只可能来自误操作）
+node_modules/

@@ -10,7 +10,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -32,20 +32,27 @@ import {
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SKILL_ROOT = path.resolve(HERE, '..')
-// 技能部署位置 = <repo>/.agents/skills/<skill>/，上溯四级即 repo 根（本仓实例配置所在）。
-const REPO_ROOT = path.resolve(SKILL_ROOT, '..', '..', '..')
 const CLI = path.join(SKILL_ROOT, 'scripts', 'validate.mjs')
 const EXAMPLE_CONFIG = path.join(SKILL_ROOT, 'scripts', 'config.example.yaml')
 const EXAMPLE_REGISTRY = path.join(SKILL_ROOT, 'scripts', 'registry.example.yaml')
-const INSTANCE_CONFIG = path.join(REPO_ROOT, '.self-improving.yaml')
-const INSTANCE_REGISTRY = path.join(REPO_ROOT, '.self-improving', 'registry.yaml')
+// 「实例」= 已完成项目绑定的那份配置 / 注册表。协议层自带**合成夹具**，不读宿主业务仓的实例：
+// 那一读法把测试绑死在「技能部署在 <repo>/.agents/skills/<name>/、上溯三级即某个业务仓根」
+// 这个位置上 —— 协议层独立成仓或 clone 到全局后立刻失效（实测 8 例由它引发）。
+// 夹具为何是合成的而非抄一份真实实例：抄进来等于把某个业务仓的路径与项目数据搬进协议层，
+// 与「零项目耦合」直接冲突。这里只保留断言真正关心的属性。可移植性判据见 tests/portability.test.mjs。
+const INSTANCE_CONFIG = path.join(HERE, 'fixtures', 'instance', 'config-authorized.yaml')
+const INSTANCE_REGISTRY = path.join(HERE, 'fixtures', 'instance', 'registry-with-stub.yaml')
 const FIXTURES = path.join(HERE, 'fixtures')
 const fx = (...p) => path.join(FIXTURES, ...p)
 
 const loadYaml = (file) => yamlLoad(readFileSync(file, 'utf8'))
 
-/** 跑校验器 CLI（cwd=仓库根，与 fixture 相对路径口径一致；30s 超时防挂死）。 */
-function runCli(args, { cwd = REPO_ROOT, env = {} } = {}) {
+/**
+ * 跑校验器 CLI（cwd = 协议层根；30s 超时防挂死）。
+ * cwd 刻意**不**用「技能上溯若干级得到的仓库根」—— 那会让 CLI 沿 cwd 上溯捡到宿主仓的实例配置，
+ * 断言随宿主布局漂移。本文件的 CLI 断言一律显式传路径或 `--config`。
+ */
+function runCli(args, { cwd = SKILL_ROOT, env = {} } = {}) {
   const r = spawnSync(process.execPath, [CLI, ...args], {
     cwd,
     encoding: 'utf8',
@@ -202,10 +209,22 @@ describe('validate.mjs · CLI 红绿场景', () => {
 
 describe('配置解析链（--config > env > repo 根实例 > 内置默认）', () => {
   it('无参默认读 repo 根 .self-improving.yaml（PASS 输出标注实例配置路径）', () => {
-    const { status, out } = runCli([fx('entries/valid-basic.md')])
-    assert.equal(status, 0)
-    assert.match(out, /\.self-improving\.yaml/)
-    assert.ok(!out.includes('config.example.yaml'), '默认不应命中技能 example 配置')
+    // 造一个**真仓库根**当夹具：这一级判据的语义是「CLI 沿 cwd 定位仓库根并读那里的实例配置」，
+    // 必须在仓库语义下验证。原先它靠「技能恰好部署在某个业务仓内」而被满足 —— 那是位置假设的
+    // 变体：协议层一独立成仓，无参就退化成「命中内置默认值」，本例随即红。
+    // 只 mkdir 一个 `.git` 目录即可：validate.mjs 先试 `git rev-parse`，失败则从 cwd 上溯找 `.git`，
+    // 两条路径都能命中，且不起子进程、不依赖本机装了 git。
+    const repo = mkdtempSync(path.join(tmpdir(), 'self-improving-chain-'))
+    try {
+      mkdirSync(path.join(repo, '.git'), { recursive: true })
+      writeFileSync(path.join(repo, '.self-improving.yaml'), readFileSync(INSTANCE_CONFIG, 'utf8'), 'utf8')
+      const { status, out } = runCli([fx('entries/valid-basic.md')], { cwd: repo })
+      assert.equal(status, 0)
+      assert.match(out, /\.self-improving\.yaml/)
+      assert.ok(!out.includes('config.example.yaml'), '默认不应命中技能 example 配置')
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
   })
 
   it('--config 覆盖 env：env 指向非法配置 + --config 指向合法配置 → exit 0（--config 胜出）', () => {
@@ -236,10 +255,17 @@ describe('配置解析链（--config > env > repo 根实例 > 内置默认）', 
       resolveConfigPath({ cliConfig: null, env: { SELF_IMPROVING_CONFIG: '/x/b.yaml' }, repoRoot: '/x' }).path,
       '/x/b.yaml',
     )
-    // 无前两级 → repo 根实例
-    const repoRoot = path.dirname(INSTANCE_CONFIG)
-    const fromRepo = resolveConfigPath({ cliConfig: null, env: {}, repoRoot })
-    assert.equal(fromRepo.path, INSTANCE_CONFIG)
+    // 无前两级 → repo 根实例：用一份真临时仓库当夹具。造真仓而不是复用一个「假定存在」的
+    // 宿主仓路径，是因为后者正是本文件要消灭的那种位置假设。
+    const repo = mkdtempSync(path.join(tmpdir(), 'self-improving-repo-'))
+    try {
+      const inst = path.join(repo, '.self-improving.yaml')
+      writeFileSync(inst, 'version: 1\n', 'utf8')
+      const fromRepo = resolveConfigPath({ cliConfig: null, env: {}, repoRoot: repo })
+      assert.equal(fromRepo.path, inst)
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
     // 全无 → 内置默认（path=null）
     const empty = mkdtempSync(path.join(tmpdir(), 'self-improving-noconf-'))
     try {
@@ -268,7 +294,7 @@ describe('配置实例与模板（kill-switch 授权态 + 全键覆盖）', () =
   const AUTHORIZED_SWITCHES = { injection: true, capture: true, distill: true }
   for (const [label, file, expected] of [
     ['技能模板', EXAMPLE_CONFIG, { injection: false, capture: false, distill: false }],
-    ['repo 实例', INSTANCE_CONFIG, AUTHORIZED_SWITCHES],
+    ['实例夹具', INSTANCE_CONFIG, AUTHORIZED_SWITCHES],
   ]) {
     it(`${label}（${path.basename(file)}）：kill-switch 与授权账一致`, () => {
       const ks = loadYaml(file).kill_switch
@@ -328,7 +354,7 @@ describe('registry 模板与实例（模板空表 + 同构三键）', () => {
     for (const k of ['key', 'args', 'when']) assert.ok(text.includes(k), `注释应提及 ${k}`)
   })
 
-  it('repo 实例：guards 每条都过同构三键校验；债务桩必须显式标 mode: debt-stub', () => {
+  it('实例夹具：guards 每条都过同构三键校验；债务桩必须显式标 mode: debt-stub', () => {
     const text = readFileSync(INSTANCE_REGISTRY, 'utf8')
     const doc = yamlLoad(text)
     assert.ok(Array.isArray(doc.guards), 'guards 须为数组')

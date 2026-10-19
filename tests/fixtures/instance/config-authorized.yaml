@@ -1,0 +1,44 @@
+# config-authorized.yaml —— **合成**的「已授权实例配置」夹具
+#
+# 角色：替代原先「直接读宿主业务仓根 .self-improving.yaml」的做法。
+# 那一读法把协议的测试绑死在「技能部署在 <repo>/.agents/skills/<name>/、上溯三级即某个
+# 业务仓根」这个位置上 —— 协议层独立成仓或 clone 到全局后立刻失效。
+#
+# 为什么是合成的而不是抄一份真实实例：抄真实实例等于把某个业务仓的路径与项目数据搬进协议层，
+# 与「零项目耦合」直接冲突。这里只保留断言真正关心的属性：**kill_switch 已授权**。
+#
+# 授权账（原宿主实例上的授权事实，搬到这里只保留语义，不带项目路径）：
+#   capture   —— append-only、写 gitignored 事件库、不读不拦截，打开只积累数据
+#   distill   —— 蒸馏产物只落 gitignored 暂存区，正式条目区仍零写入
+#   injection —— 唯一改变每个会话可见行为的开关；默认桶 other 永不注入
+version: 1
+
+scope:
+  values: [infra, testing, git, data-ui, model, kb, other]
+  default: other
+
+injection:
+  top_k: 5
+  budget_chars: 2000
+  budget_ms: 300
+  timeout_ms: 3000
+
+retire:
+  cycle_days: 90
+
+storage:
+  entries_dir: .self-improving/entries/
+  events_dir: .self-improving/events/
+  proposals_dir: .self-improving/proposals/
+  registry: .self-improving/registry.yaml
+
+event_sources:
+  - gate
+  - hook
+  - tool
+  - manual
+
+kill_switch:
+  injection: true
+  capture: true
+  distill: true

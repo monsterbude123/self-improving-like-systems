@@ -715,9 +715,12 @@ describe('宿主接线片段（只出片段，不改 .zcode/config.json）', () 
         assert.ok(hooks, `片段必须含 events.${f.event} 接线`)
         assert.equal(hooks.command, 'node', '直调 node，不经包管理器 run 层')
         assert.ok(hooks.timeoutMs >= 1000, '须给外层超时上限')
-        // <repo> / <SKILL_DIR> 占位符换成实际路径（片段只出片段，落地由主代理在合入后写入主仓 config）
-        const repoRoot = SKILL_ROOT.split(/[\\/]/).slice(0, -4).join('/')
-        const argv = hooks.args.map((a) => a.replace('<repo>/', `${repoRoot}/`).replace('<SKILL_DIR>/', `${repoRoot}/.agents/skills/self-improving-like-systems/`))
+        // <repo> / <SKILL_DIR> 占位符换成实际路径。片段本身只出片段，落地由接入方写入自己的宿主配置。
+        // 两个占位符**都**替换成 SKILL_ROOT：协议层不假设自己位于「某业务仓的 .agents/skills/<name>/、
+        // 上溯四级」这种固定深度，也不假设接入方把协议层 vendored 在仓内某个具体子路径 ——
+        // 原写法 `slice(0, -4)` 把那个假设写死成一行算术，协议层独立成仓后它指向一个不存在的目录。
+        // 可移植性判据见 tests/portability.test.mjs。
+        const argv = hooks.args.map((a) => a.replace('<repo>/', `${SKILL_ROOT}/`).replace('<SKILL_DIR>/', `${SKILL_ROOT}/`))
         assert.ok(!argv.some((a) => a.includes('<')), `占位符未替换干净: ${JSON.stringify(argv)}`)
         const real = argv.map((a) => (/[\\/]scripts[\\/]/.test(a) ? path.join(SKILL_ROOT, 'scripts', path.basename(a)) : a))
         const r = spawnSync(process.execPath, [...real, '--config', path.join(dir, 'config-on.yaml')], {

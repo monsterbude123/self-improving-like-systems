@@ -1,0 +1,23 @@
+# registry-with-stub.yaml —— **合成**的「含债务桩的实例注册表」夹具
+#
+# 角色：替代原先「直接读宿主业务仓 .self-improving/registry.yaml」的做法（同 config-authorized.yaml
+# 的理由：那一读法把测试绑死在宿主仓布局上，且会把项目守卫数据带进协议层）。
+#
+# 这里保留的是断言真正关心的两种形态：
+#   ① 一条**真守卫** —— 声明了可执行判据（args 指向本仓守卫脚本），须过同构三键校验
+#   ② 一条**债务桩** —— key: legacy-unbound，历史条目尚无可执行判据，必须自报 mode: debt-stub，
+#      不许冒充真守卫被消费。破坏测试见 validate.test.mjs「registry 模板与实例」组。
+#
+# 三键语义（key / args / when）以 registry.example.yaml 的注释为权威，此处不重复。
+guards:
+  # 债务桩：这一类历史条目尚无可执行判据，登记它只是为了占住 key 并接受绑定校验。
+  # args 仍须非空（同构三键契约的硬要求，实测过空数组会被 validateRegistryEntry 判红）——
+  # 桩与真守卫的差别在 mode，不在「有没有指向脚本」。
+  - key: legacy-unbound
+    args: ['scripts/guards/entry-guard-binding.mjs']
+    when: always
+    mode: debt-stub
+  # 真守卫：判据是一个可执行脚本
+  - key: entry-guard-binding
+    args: ['scripts/guards/entry-guard-binding.mjs']
+    when: commit 前

@@ -11,7 +11,7 @@
  *   | 把兄弟工作树那一层从可见域删掉 | 「必须看见兄弟工作树已占用的号」 |
  *   | 把 claim 原子占用改成普通写入 | 「两个并发 claim 不得拿到同一个号」 |
  *
- * 运行：node --test .agents/skills/self-improving-like-systems/tests/next-id.test.mjs
+ * 运行：在协议层根目录下 node --test tests/next-id.test.mjs
  * 接入：本仓 npm run test:gates 已挂（同 SKILL_ROOT/tests 下其余 *.test.mjs 同理）
  */
 import { describe, it } from 'node:test'
@@ -22,12 +22,26 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// 仓根从 CWD 解析：测试要在任意工作树里跑，不能假定自己在仓根
-const ROOT = process.env.LEARNINGS_ROOT || process.cwd()
-const SCRIPT = process.env.NEXT_ID_SCRIPT
-  || path.join(ROOT, '.agents', 'skills', 'self-improving-like-systems', 'scripts', 'next-id.sh')
+// 脚本按**本文件位置**解析，不按 cwd、也不假设部署在 <repo>/.agents/skills/<name>/。
+// 原写法是「从 CWD 出发拼 .agents/skills/self-improving-like-systems/scripts/next-id.sh」——
+// 协议层一独立成仓或 clone 到全局，它就指向不存在的目录，而下方 has/SKIP 会让 5 个用例
+// 「跳过，不计为通过」：退出码 0、TAP 全绿，覆盖却悄悄没了。可移植性判据见 tests/portability.test.mjs。
+const HERE = path.dirname(fileURLToPath(import.meta.url))
+const SKILL_ROOT = path.resolve(HERE, '..')
+const SCRIPT_OVERRIDDEN = Boolean(process.env.NEXT_ID_SCRIPT)
+const SCRIPT = process.env.NEXT_ID_SCRIPT || path.join(SKILL_ROOT, 'scripts', 'next-id.sh')
 const has = existsSync(SCRIPT)
 const SKIP = `next-id.sh 不存在（${SCRIPT}）—— 跳过，不计为通过`
+
+// 未显式覆盖路径时，脚本不存在是**布局坏了**而不是「环境没这个可选组件」：判红，不判跳过。
+// 否则协议层换个位置就静默少测 5 个用例，而门禁显示全绿 —— 这正是本文件要消灭的那类失效。
+if (!has && !SCRIPT_OVERRIDDEN) {
+  throw new Error(
+    `next-id.sh 应随协议层一起存在于 ${SCRIPT}。` +
+    `找不到它通常意味着脚本位置解析写错了（不是「本环境缺少可选组件」）——` +
+    `请用 NEXT_ID_SCRIPT 显式覆盖路径，而不是让它静默跳过。`,
+  )
+}
 
 /** 固定日期，避免测试结果随当天已有条目漂移。 */
 const DATE = '20990131'
@@ -52,7 +66,9 @@ describe('learnings 编号分配器', () => {
 
   it('--claim：占用后同一个号不会再被发出去（claim 进入下一轮可见域）', (t) => {
     if (!has) return t.skip(SKIP)
-    const claims = path.join(ROOT, '.learnings-work', 'claims')
+    // claims 目录由 next-id.sh 从**脚本自身位置**推出（MAIN_ROOT），故这里也必须落在协议仓根，
+    // 不能指向 cwd 或某个业务仓 —— 脚本在哪，编号账本就跟着在哪。
+    const claims = path.join(SKILL_ROOT, '.learnings-work', 'claims')
     const first = run(['LRN', '--claim'])
     const second = run(['LRN', '--claim'])
     try {

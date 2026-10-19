@@ -17,7 +17,6 @@ import { scoreEntry, resolveRanking } from '../scripts/inject.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SKILL_ROOT = path.resolve(HERE, '..')
-const REPO_ROOT = path.resolve(SKILL_ROOT, '..', '..', '..')
 const CLI = path.join(SKILL_ROOT, 'scripts', 'inject.mjs')
 const FIXTURE_DIR = path.join(HERE, 'fixtures', 'inject')
 const RANK_FIXTURE_DIR = path.join(HERE, 'fixtures', 'inject-rank')
@@ -31,8 +30,13 @@ function freshTmp() {
   return dir
 }
 
-/** 跑注入 CLI（cwd=仓库根；30s 超时防挂死；清环境变量防外部配置泄漏）。 */
-function runInject(args, { cwd = REPO_ROOT } = {}) {
+/**
+ * 跑注入 CLI（cwd = 协议层根；30s 超时防挂死；清环境变量防外部配置泄漏）。
+ * cwd 刻意**不**用「技能上溯若干级得到的仓库根」：那假设技能部署在某个业务仓的固定深度，
+ * 且会让 CLI 沿 cwd 上溯捡到宿主仓的实例配置，使断言随宿主布局漂移。本文件全部用例都显式
+ * `--config` 指向 fixture，cwd 只影响那四级解析链的兜底分支。可移植性判据见 tests/portability.test.mjs。
+ */
+function runInject(args, { cwd = SKILL_ROOT } = {}) {
   const r = spawnSync(process.execPath, [CLI, ...args], {
     cwd,
     encoding: 'utf8',

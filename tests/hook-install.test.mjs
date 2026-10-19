@@ -9,8 +9,14 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { doctorConfig } from '../scripts/hook-install.mjs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const SCRIPTS = path.resolve('.agents/skills/self-improving-like-systems/scripts')
+// 脚本目录按**本文件位置**解析，不按 cwd、也不假设部署在 <repo>/.agents/skills/<name>/。
+// 原写法是 path.resolve('.agents/skills/self-improving-like-systems/scripts') —— 它隐含
+// 「技能部署在某个业务仓的固定深度」，协议层一旦独立成仓或 clone 到全局，就静默指向不存在的
+// 目录，体检器于是对每条用例误报「脚本不存在」。可移植性判据见 tests/portability.test.mjs。
+const SKILL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const SCRIPTS = path.join(SKILL_ROOT, 'scripts')
 
 /**
  * 造一份最小合法配置：enabled + 一条 PostToolUseFailure（command 型）。
