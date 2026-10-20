@@ -19,6 +19,9 @@
 #
 # O(1) spawn：枚举走 bash glob + 单次 awk，不用 find / grep -r
 # （见 ERR-20261010-001：O(行数)×(进程 spawn) 会把门禁拖成小时级）。
+# 2026-10-20 补：取文件名一律 `${f##*/}` 参数展开，**不用 basename**。
+# basename 是外部命令 = 每个文件一次 fork；claim 目录一旦积压（判据自己的残留就能堆到几百个），
+# 单次取号就从毫秒级涨到十几秒，整条判据被拖成分钟级。参数展开是 bash 内建，0 fork。
 set -euo pipefail
 
 # 仓根**从当前工作目录**解析，不从脚本自身位置 —— 本脚本住在 skill 目录里
@@ -46,7 +49,7 @@ if [ "${1:-}" = "--audit" ]; then
     [ -d "$d" ] || continue
     for f in "$d"/*-"$DATE"-*.md; do
       [ -e "$f" ] || continue
-      printf '%s\t%s\n' "$(basename "$f")" "$d"
+      printf '%s\t%s\n' "${f##*/}" "$d"
     done
   done | sort -u > "$LIST"
   awk -F'\t' -v d="$DATE" '
@@ -92,9 +95,9 @@ LIST="$(mktemp)"; trap 'rm -f "$LIST"' EXIT
 {
   for d in "$ROOT/.learnings" "$MAIN_ROOT/.learnings" "$MAIN_ROOT"/.worktrees/*/.learnings; do
     [ -d "$d" ] || continue
-    for f in "$d/${TYPE}-${DATE}-"*.md; do [ -e "$f" ] && basename "$f"; done
+    for f in "$d/${TYPE}-${DATE}-"*.md; do [ -e "$f" ] && printf '%s\n' "${f##*/}"; done
   done
-  for f in "$CLAIM_DIR/${TYPE}-${DATE}-"*.claim; do [ -e "$f" ] && basename "$f"; done
+  for f in "$CLAIM_DIR/${TYPE}-${DATE}-"*.claim; do [ -e "$f" ] && printf '%s\n' "${f##*/}"; done
   git -C "$MAIN_ROOT" ls-tree -r --name-only my_dev -- .learnings 2>/dev/null || true
 } > "$LIST"
 

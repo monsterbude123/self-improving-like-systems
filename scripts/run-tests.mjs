@@ -47,20 +47,28 @@ export function listTestFiles(testsDir = TESTS_DIR) {
 
 /**
  * 跑全套判据。stdio 直通，TAP 汇总与退出码由 node --test 原样产出。
- * @param {{cwd?: string}} [opts]
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.cwd] 子进程工作目录（默认协议层根）
+ * @param {string[]} [opts.files] 跑哪些测试文件（默认 `listTestFiles()` 全套）。
+ *   存在的理由不是「给测试开后门」：`tests/self-check-hygiene.test.mjs` 需要用**同一套派发路径**
+ *   跑一个探针，才能证明隔离对真实调用链成立；自己另写一条 spawnSync 就等于把判据分成两份口径。
+ * @param {Array<'inherit'|'pipe'|'ignore'>} [opts.stdio] 子进程 stdio（默认 inherit = 原样透传 TAP）。
+ *   嵌在 `node --test` 里跑时必须传 'pipe'：子进程的 TAP 原始行混进父 TAP 流会扰乱汇总解析。
+ * @param {Record<string,string>} [opts.env] 追加/覆盖的子进程环境变量（用于把子进程的 tmpdir 指向受控目录）。
  * @returns {number} 退出码
  */
 export function runAll(opts = {}) {
-  const files = listTestFiles()
-  const env = { ...process.env }
-  // 本脚本自己可能是在 `node --test` 里被调起（T3 的端到端验收就这么干）。
+  const files = opts.files ?? listTestFiles()
+  const env = { ...process.env, ...(opts.env || {}) }
+  // 本脚本自己可能是在 `node --test` 里被调起（T3 的端到端验收、自检污染检查都这么干）。
   // 该变量存在时子进程会**静默跳过整个文件并 exit 0** —— 那正是「自检永远绿」的形态：
   // 断言只看退出码就完全失效，必须剥掉，并且 stdout 必须真有 TAP 汇总可查。
   delete env.NODE_TEST_CONTEXT
 
   const r = spawnSync(process.execPath, ['--test', ...files], {
     cwd: opts.cwd ?? PROTOCOL_ROOT,
-    stdio: 'inherit',
+    stdio: opts.stdio ?? 'inherit',
     env,
   })
   if (r.error) {

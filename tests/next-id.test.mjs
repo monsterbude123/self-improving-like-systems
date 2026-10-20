@@ -17,7 +17,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -68,6 +68,37 @@ function claimsDir() {
   return path.join(path.dirname(common), '.learnings-work', 'claims')
 }
 
+/**
+ * 释放一次占用 —— **按编号从账本目录里找文件，不按脚本 stdout 里打印的路径删**。
+ *
+ * 2026-10-20 实测的坑：Git Bash 下脚本 `echo "$CLAIM"` 打印的是 MSYS 路径
+ * （`/d/workspace/...`），那个路径只存在于 MSYS 虚拟文件系统里，**原生 Node 的
+ * `existsSync` 看不到** —— 于是旧写法里的 `if (existsSync(p)) rmSync(p)` 恒为假，
+ * 清理静默失效，每跑一次判据就往账本里漏 7 个 `20990131` 假编号。
+ * 漏掉的编号不是垃圾：它们会把真实条目的号段永久顶高，而且让判据越跑越慢
+ * （脚本要扫的 claim 文件线性增长）。
+ *
+ * 改成「账本目录 + 编号前缀」匹配，两个好处：路径形态由 Node 自己拼（跨 shell 一致），
+ * 且不依赖文件名后缀（脚本里的 `$SLUG` 会变，拼全名迟早又错一次）。
+ * @param {string|null} id 脚本 stdout 第一行给的编号
+ * @param {string|null} ledger 账本目录
+ */
+function releaseClaim(id, ledger) {
+  if (!id || !ledger || !existsSync(ledger)) return
+  for (const f of readdirSync(ledger)) {
+    if (f.startsWith(`${id}.`)) rmSync(path.join(ledger, f), { force: true })
+  }
+}
+
+/**
+ * 本文件**加载时**的账本快照，供文件末尾那条「判据不得留下占用」断言比对。
+ * 在模块顶层算（而不是每条用例各算一次）：这是「进来时的样子」，只该有一个时刻。
+ */
+const LEDGER_AT_LOAD = (() => {
+  const d = claimsDir()
+  return d && existsSync(d) ? readdirSync(d).sort() : null
+})()
+
 function run(args, extra = {}) {
   const r = spawnSync('bash', [SCRIPT, ...args], {
     encoding: 'utf8',
@@ -98,10 +129,7 @@ describe('learnings 编号分配器', () => {
       assert.notEqual(first.out.split('\n')[0], second.out.split('\n')[0],
         '两次 claim 拿到同一个号 = 占用没生效')
     } finally {
-      for (const o of [first, second]) {
-        const p = o.out.split('\n')[1]
-        if (p && existsSync(p)) rmSync(p, { force: true })
-      }
+      for (const o of [first, second]) releaseClaim(o.out.split('\n')[0], claims)
       assert.ok(existsSync(claims), `账本目录未落地：${claims} —— claim 声称成功却没占号`)
     }
   })
@@ -119,10 +147,7 @@ describe('learnings 编号分配器', () => {
         '每个并发 claim 要么成功要么报并发冲突，不允许其它退出码')
       for (const r of conflicted) assert.match(r.err, /并发冲突/, `冲突信息须说明原因：${r.err}`)
     } finally {
-      for (const r of claimed.length ? results : []) {
-        const p = r.out.split('\n')[1]
-        if (p && existsSync(p)) rmSync(p, { force: true })
-      }
+      for (const r of results) releaseClaim(r.out.split('\n')[0], claimsDir())
     }
   })
 
@@ -161,5 +186,18 @@ describe('learnings 编号分配器', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  it('判据自身不得在编号账本里留下占用（假编号会永久顶高真实条目的号段）', (t) => {
+    if (!has) return t.skip(SKIP)
+    const ledger = claimsDir()
+    if (!ledger || !LEDGER_AT_LOAD) return t.skip('不在 git 仓里：next-id.sh 本来也占不到号')
+    assert.deepEqual(
+      existsSync(ledger) ? readdirSync(ledger).sort() : null,
+      LEDGER_AT_LOAD,
+      '跑完这一整个文件，账本目录必须回到进来时的样子。' +
+        '每个 --claim 都 releaseClaim() 过了；这里再兜一层，是因为清理失败在 Windows 上' +
+        '静默过一次（MSYS 路径 existsSync 恒假），而那次的症状就是这条断言变红。',
+    )
   })
 })

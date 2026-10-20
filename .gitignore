@@ -18,3 +18,9 @@
 
 # Node（协议层是零依赖的纯 .mjs，node_modules 只可能来自误操作）
 node_modules/
+
+# 本机工作树（`git worktree add .worktrees/<name>`）。
+# 放在仓里而不是让各人自己加进 ~/.gitignore：这是一个**公开可 clone 的协议仓**，
+# 2026-10-20 实测没挡住 —— 任何 clone 下来开工作树的人 `git status` 都会冒一条
+# `?? .worktrees/`，久了就条件反射地 `git add .`，把整套工作树提交进公开仓。
+.worktrees/

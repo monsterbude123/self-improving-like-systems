@@ -89,7 +89,11 @@ export function failOpen(err, config, baseDir, module = 'inject') {
   console.error(`[inject] fail-open: ${reason}（输出空块，绝不阻塞调用方）`)
   // 异常独立成文件：inject / distill / verify / approve / hook 共用本出口，
   // 故在这里记一次就覆盖全部五个模块的 fail-open（否则「今天哪个模块出的事」要翻五个 stderr）。
-  createLogger({ module, baseDir: baseDir || process.cwd(), config })
+  // baseDir 原样传下去，**不拿 process.cwd() 兜底**：配置损坏时 baseDir 就是 null，
+  // 此时日志器落 tmp 兜底目录（与 log-query.mjs 的读侧同一处）。
+  // 早先这里兜成 cwd，于是自检的坏配置夹具每次跑都往安装目录的真实日志里写一条
+  // 与线上真故障同形的 ERROR —— 2026-10-20 实测，见 log.mjs resolveLogDir。
+  createLogger({ module, baseDir, config })
     .error(`fail-open: ${reason}`, err instanceof Error ? err : null)
   flushAudit(config, baseDir, [{ action: 'fail-open', error: reason }])
   return 0

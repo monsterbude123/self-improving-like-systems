@@ -63,6 +63,33 @@ export function resolveLogging(config) {
   }
 }
 
+/**
+ * 日志目录解析 —— **写侧与读侧（log-query.mjs）必须得出同一个答案**。
+ *
+ * 2026-10-20 实测修掉的 bug：配置损坏 → `loadContext` 拿不到 `baseDir` → 日志器把内置
+ * 缺省 `.self-improving/logs/` 解析到 `process.cwd()` 上。而 `log-query.mjs` 在同样情况下
+ * 查的是 `fallbackLogDir()`（os tmpdir）。**写侧和读侧指向两个不同目录**：
+ *   · 故障现场：注入挂了，去查日志，什么都没有（读侧看不到写侧写的东西）；
+ *   · 附带污染：自检的 cwd 是协议层根，于是「故意踩 fail-open 的夹具」每跑一次自检，
+ *     就往**安装目录的真实运行时日志**里塞一条与线上真故障逐字节同形的 ERROR，
+ *     把可观测面变成噪声源（fail-open 按设计必须记 ERROR，降级级别是错的方向，
+ *     该修的是落点）。
+ *
+ * 所以规则是：**没有 baseDir（配置不可用）就落 tmp 兜底目录，绝不猜 cwd**。
+ * 猜 cwd 的代价是「判据污染安装目录 + 故障现场查不到日志」两条同时中。
+ *
+ * @param {string|null|undefined} baseDir 配置与相对路径的基准（loadContext 给的）
+ * @param {string} [cfgDir] 配置里**原始的** `logging.dir`（未兜底）
+ * @returns {string} 绝对路径
+ */
+export function resolveLogDir(baseDir, cfgDir) {
+  const base = typeof baseDir === 'string' && baseDir.trim() !== '' ? baseDir : null
+  const explicit = typeof cfgDir === 'string' && cfgDir.trim() !== ''
+  if (explicit) return path.resolve(base || process.cwd(), cfgDir)
+  if (base) return path.resolve(base, DEFAULT_LOGGING.dir)
+  return fallbackLogDir()
+}
+
 /** 生成一个短 id（run_id / trace_id 兜底用）。 */
 export function newId(prefix) {
   return `${prefix}-${randomBytes(4).toString('hex')}`
@@ -103,19 +130,23 @@ function needsRotate(file, incomingBytes, maxBytes) {
  *
  * @param {object} o
  * @param {string} o.module 模块名（capture / inject / distill / run-guard / verify / approve / trace / hook）
- * @param {string} [o.baseDir] 配置与日志目录的基准（= loadContext 里的 baseDir）
+ * @param {string|null} [o.baseDir] 配置与日志目录的基准（= loadContext 里的 baseDir）。
+ *   **刻意不用 `process.cwd()` 兜底**：没有 baseDir 说明配置不可用，此时该落 tmp 兜底目录
+ *   （见 resolveLogDir），猜 cwd 会污染安装目录、且与读侧对不上。
  * @param {object} [o.config] 已解析的实例配置（读 `logging:` 段）
  * @param {string} [o.traceId] 上游 trace id（capture 从宿主信封抽到的）
  * @param {string} [o.runId] 本次进程执行的 run id
  * @returns {{debug:Function,info:Function,warn:Function,error:Function,runId:string,traceId:string,
  *            child:Function, span:Function, disabled:boolean}}
  */
-export function createLogger({ module, baseDir = process.cwd(), config = null, traceId = null, runId = null } = {}) {
+export function createLogger({ module, baseDir = null, config = null, traceId = null, runId = null } = {}) {
   const cfg = resolveLogging(config)
   const run = runId || newId('run')
   const trace = traceId || newId('trc')
   const threshold = LEVELS[cfg.level] ?? LEVELS.info
-  const dir = path.resolve(baseDir || process.cwd(), cfg.dir)
+  // 传**原始** config.logging.dir 而非 resolveLogging 兜底后的 cfg.dir：
+  // 兜底后它永远非空，env 就再也顶不掉兜底落点，隔离等于没做。
+  const dir = resolveLogDir(baseDir, config && config.logging ? config.logging.dir : '')
   const disabled = cfg.enabled === false
 
   // 目录建不出来 / 无写权限 → 立即短路，后续每次调用只做一次布尔判断（零 IO）
