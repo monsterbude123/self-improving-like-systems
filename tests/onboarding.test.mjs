@@ -337,9 +337,20 @@ test('零耦合 · 接入链路产出里没有任何指向协议层自身检出�
 test('破坏测试：注入一条含检出根的产出 → 泄漏判据必须报出来（不得恒绿）', () => {
   const needles = selfLeaks()
   const root = needles.find(([v]) => v.length > 1)[0]
-  assert.deepEqual(leakReasons(`# 泄漏样例 ${root}\n`, needles), ['协议层检出根'], '含检出根的产出必须被判为泄漏')
+  // 断言「报出了这一类」而不是「恰好只报这一类」：协议层装在 ~/.agents/skills/ 下时，
+  // 检出根本身就在家目录里，同一个字符串**同时**命中两条判据（2026-10-20 实测装到
+  // C:\Users\<user>\.agents\skills\ 之后这条恒红，而那正是官方安装路径）。
+  // 写成 deepEqual(['协议层检出根']) 等价于要求「协议层不许装在家目录里」。
+  // 破坏方向一点没弱：干净产出仍必须报 0 条（第二行），脏产出仍必须非空且含目标标签。
+  assert.ok(
+    leakReasons(`# 泄漏样例 ${root}\n`, needles).includes('协议层检出根'),
+    '含检出根的产出必须被判为泄漏',
+  )
   assert.deepEqual(leakReasons(`# 正常产出 ${JSON.stringify({ guards: [] })}\n`, needles), [], '干净产出不得被误报')
   // 家目录形态同样要能认出（Windows 上路径分隔符不同，只测检出根会漏掉一半）
   const home = needles.find(([, what]) => what === '用户家目录')[0]
-  assert.deepEqual(leakReasons(`# ${home}\n`, needles), ['用户家目录'], '含家目录的产出必须被判为泄漏')
+  assert.ok(
+    leakReasons(`# ${home}\n`, needles).includes('用户家目录'),
+    '含家目录的产出必须被判为泄漏',
+  )
 })

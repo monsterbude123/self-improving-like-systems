@@ -9,7 +9,7 @@
  * 真的注入挂了，去查日志会一无所获。
  *
  * 本文件的判据是**双向**的，缺一不可：
- *   · 正向：探针必须**真的**写出一条 ERROR 到 tmp 兜底目录 —— 否则「运行时目录没变」是因为没人写，是空断言；
+ *   · 正向：必须**真的**写出一条 ERROR 到 tmp 兜底目录 —— 否则「运行时目录没变」是因为没人写，是空断言；
  *   · 反向：运行时日志目录必须**逐字节不变** —— 这条变红才是缺陷真的回来了。
  * 只做后半条 = 判据在「日志器坏了」时同样绿。
  *
@@ -17,16 +17,16 @@
  */
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { PROTOCOL_ROOT, runAll } from '../scripts/run-tests.mjs'
+import { PROTOCOL_ROOT } from '../scripts/run-tests.mjs'
 import { resolveLogDir, fallbackLogDir } from '../scripts/lib/log.mjs'
 
-const TESTS_DIR = path.join(PROTOCOL_ROOT, 'tests')
 /** 自检前的真实运行时日志落点（配置缺省 `.self-improving/logs/` 相对协议层根）。 */
 const RUNTIME_LOG_DIR = path.join(PROTOCOL_ROOT, '.self-improving', 'logs')
-const PROBE = path.join(TESTS_DIR, 'fixtures', 'logging', 'fail-open-probe.test.mjs')
+const INJECT = path.join(PROTOCOL_ROOT, 'scripts', 'inject.mjs')
 
 /** 目录快照：不存在 → null；存在 → { 文件名: 内容 }，用于逐字节比对。只收普通文件（子目录跳过）。 */
 function snapshotDir(dir) {
@@ -65,18 +65,27 @@ describe('日志目录解析：写侧与读侧必须同址', () => {
 })
 
 describe('自检不得污染运行时日志', () => {
-  it('跑一遍会写 ERROR 的探针 → 运行时日志逐字节不变，且那行 ERROR 落在 tmp 兜底目录', () => {
+  it('跑一遍真会 fail-open 的注入 → 运行时日志逐字节不变，且那行 ERROR 落在 tmp 兜底目录', () => {
     const before = snapshotDir(RUNTIME_LOG_DIR)
-    // 把子进程的 tmpdir 指到受控目录：兜底目录是全局共享的，不隔离的话
-    // 「多了一条日志」既可能被别的进程写出来，也可能被别的进程抹掉 —— 两种都让判据失去意义。
     const sandbox = mkdtempSync(path.join(tmpdir(), 'si-fallback-sandbox-'))
+    const cfgDir = mkdtempSync(path.join(sandbox, 'cfg-'))
     try {
-      const rc = runAll({
-        files: [PROBE],
-        stdio: 'pipe',
-        env: { TMPDIR: sandbox, TMP: sandbox, TEMP: sandbox },
+      // 坏配置：行内数组缺右括号，解析必失败 → inject 走 fail-open → 日志器在 baseDir 缺失时落兜底目录。
+      // 与 tests/fixtures/inject/config-broken.yaml 同一形态。
+      const cfg = path.join(cfgDir, 'config-broken.yaml')
+      writeFileSync(cfg, 'version: 1\nscope:\n  values: [infra, testing\n  default: other\n', 'utf8')
+
+      // 直接起一次真进程，而不是经 runAll 再嵌一层 node --test：
+      // 被测的是 inject → log 的落点判定，runAll 只是转发环境，嵌进来只多一份负载
+      // （实测嵌套 runner 会把全量判据的并发用例挤到偶发变红）。tmpdir 用环境变量重定向，
+      // 兜底目录是全局共享的，不隔离的话「多了一条」既可能被别的进程写出、也可能被抹掉。
+      const r = spawnSync(process.execPath, [INJECT, '--config', cfg, '--scope', 'infra', '--keywords', 'docker'], {
+        encoding: 'utf8',
+        timeout: 120_000,
+        env: { ...process.env, TMPDIR: sandbox, TMP: sandbox, TEMP: sandbox },
       })
-      assert.equal(rc, 0, '探针自身必须跑通（它就是判据的写入者，挂了就没得判）')
+      assert.equal(r.status, 0, `fail-open 必须 exit 0，实得 ${r.status}\n${r.stderr ?? ''}`)
+      assert.match(r.stderr ?? '', /fail-open/, '必须真的走到 fail-open 分支，否则本判据是空断言')
 
       // 正向：真的写了。缺这一条，「运行时目录没变」可能只是因为没人写。
       const errLog = path.join(sandbox, 'self-improving-logs', 'si-error.log')
@@ -88,7 +97,7 @@ describe('自检不得污染运行时日志', () => {
 
       // 反向：运行时日志一个字节都不能动。这条变红 = 污染缺陷回来了。
       assert.deepEqual(snapshotDir(RUNTIME_LOG_DIR), before,
-        `自检污染了运行时日志目录 ${RUNTIME_LOG_DIR}：\n前=${JSON.stringify(before)}\n后=${JSON.stringify(snapshotDir(RUNTIME_LOG_DIR))}`)
+        `注入的 fail-open 污染了运行时日志目录 ${RUNTIME_LOG_DIR}：\n前=${JSON.stringify(before)}\n后=${JSON.stringify(snapshotDir(RUNTIME_LOG_DIR))}`)
     } finally {
       rmSync(sandbox, { recursive: true, force: true })
     }
