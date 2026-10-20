@@ -82,13 +82,19 @@ describe('并发写不丢更新（真并发：多进程同时起跑）', () => {
       //   ② 守卫自身 error：起不来 / 超时 / 非约定退出码 → 计入 shadow_runs 但**不计** green
       //      （run-guard.mjs 的既定纪律：不该因守卫自己坏了就发绿），账上分列 error_runs
       //   ③ 正常 pass：计入 runs 且计入 green
-      // 另有 ④ 状态账读失败（锁内重试 3 轮仍读不到）→ 同样跳过写 + 告警 + 审计留痕。
+      // 另有 ④ 状态账读失败（锁内重试 3 轮仍读不到）→ 同样跳过写 + 告警 + 审计留痕；
+      //      ⑤ 状态账**写**失败（重试 3 轮仍写不进）→ 同样跳过写 + 告警 + 审计留痕。
+      //      ⑤ 是 2026-10-20 新增的通道：Windows 上并发写同名文件时 rename 会撞 EPERM
+      //      （目标文件正被别的进程打开），旧实现把写失败吞成一行 stderr，账本静默少一次
+      //      计数（实测 shadow_runs=9、审计 10 行、全员 exit 0、**零降级告警**）。
+      //      契约要求「每次派发都被某个通道归类」—— 写失败也必须归类，不能凭空消失。
       // 原断言写死「全放行 → green + 锁降级 == 10」，把 ② 当成了静默丢。实测机器饱和时
       // 10 个派发每个 ~9s（单发仅 2.5s），守卫大批 error，green=0 / error_runs=10 —— 账本
       // 其实分毫不差，是断言的前提「全放行」不成立。判据应是「每次派发都被某个通道归类」。
-      // 降级判据两条告警串都算：只认其中一条会把另一条读成静默丢（这正是 2026-10-17 踩的坑）。
+      // 降级判据三条告警串都算：只认其中一条会把另一条读成静默丢（这正是 2026-10-17 踩的坑，
+      // 2026-10-20 又在「写失败」这条上踩了一次）。
       const degraded = results.reduce((n, r) => n + (
-        (r.stderr.includes('状态锁获取失败') || r.stderr.includes('状态账读取失败')) ? 1 : 0
+        (r.stderr.includes('状态锁获取失败') || r.stderr.includes('状态账读取失败') || r.stderr.includes('状态写入失败')) ? 1 : 0
       ), 0)
       const state = readState(dir)
       const guard = state.guards[GUARD_KEY]
@@ -259,6 +265,55 @@ describe('锁的原语（不丢更新 / 不永久死锁）', () => {
       assert.equal(readFileSync(target, 'utf8'), '{"a":1}\n')
       const leftovers = readdirSync(dir).filter((f) => f.includes('.tmp-'))
       assert.deepEqual(leftovers, [], '原子写不得留 tmp 残留')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('释放锁时不得删掉「已经不属于自己的」那把锁（删了 = 制造第二个持有者 = 静默丢更新）', () => {
+    // 2026-10-20 实测的漏洞：A 的 finally 无条件 rmSync(lockPath)。当 B 已经 mkdir 出新锁
+    // 目录并进入临界区时，A 的这次 rm 删掉的是 **B 的**锁 → C 也能进临界区 →
+    // 两个进程同时读到同一份快照 → 静默丢一次更新（零告警）。
+    // 这里把「锁在临界区内被换成别人的」直接构造出来：临界区里把 owner.json 改成别人的 pid，
+    // 临界区结束后锁必须**原样留下**（不归我们，我们就不该动它）。
+    const dir = mkdtempSync(path.join(tmpdir(), 'conc-release-'))
+    try {
+      const lock = path.join(dir, 'z.lock')
+      const out = withFileLock(lock, () => {
+        writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ pid: 999_999, host: hostname(), at: new Date().toISOString() }), 'utf8')
+        return 'ran'
+      })
+      assert.equal(out, 'ran', '临界区应当照常执行')
+      assert.ok(existsSync(lock), '锁已不属自己 → 不得删除（删了就有第二个持有者）')
+      // 别人的锁也不该被我们"顺手清掉"：确认内容还是别人的 owner
+      const owner = JSON.parse(readFileSync(path.join(lock, 'owner.json'), 'utf8'))
+      assert.equal(owner.pid, 999_999, '不得改写别人的 owner')
+      rmSync(lock, { recursive: true, force: true })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('降级通道必须真的能报（2026-10-20 实测：它从来没跑通过）', () => {
+  it('状态账读不出来 → 必须告警 + 审计留痕 + exit 0（不得静默消失）', async () => {
+    // 降级路径旧实现引用了两个**未定义标识**（`mode` / `shadow`），一进来就抛
+    // ReferenceError，被外层 fail-open 吞成「放行，不阻塞提交」→ 这次派发彻底消失：
+    // 不进账、不告警、审计也没有。判据只认 stderr 里的告警串，于是把降级读成了静默丢。
+    // 构造方式：把状态账路径占成一个**目录** → 读必失败（EISDIR）→ 走降级通道。
+    const dir = freshTmp(LIFECYCLE_FIXTURE, 'conc-degrade-')
+    try {
+      mkdirSync(path.join(dir, 'guard-state.json'), { recursive: true }) // 路径被目录占住 → 读必失败
+      const r = await spawnCli([RUNNER, '--key', GUARD_KEY, '--text', CLEAN, '--config', path.join(dir, 'config.yaml')])
+      assert.equal(r.code, 0, `降级必须 exit 0（fail-open 不阻塞提交），实得 ${r.code}\n${r.stderr}`)
+      assert.match(r.stderr, /状态账读取失败/, '降级必须显式告警 —— 否则这次派发就是静默丢')
+      assert.doesNotMatch(r.stderr, /mode is not defined|is not defined/, '降级路径不得抛 ReferenceError')
+      // 审计必须留痕：降级的那一次也在审计里（可对账补齐）
+      const audit = readFileSync(path.join(dir, 'audit', 'audit.jsonl'), 'utf8').split(/\r?\n/).filter((l) => l.trim() !== '')
+      assert.equal(audit.length, 1, `降级也必须留一条审计（实得 ${audit.length} 条）`)
+      const rec = JSON.parse(audit[0])
+      assert.equal(rec.degraded, true, '审计里的降级记录必须标 degraded')
+      assert.equal(rec.reason, 'state-unreadable', `降级原因必须写明（实得 ${rec.reason}）`)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

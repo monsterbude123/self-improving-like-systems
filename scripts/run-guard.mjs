@@ -244,7 +244,13 @@ export function writeGuardState(config, baseDir, state) {
     atomicWrite(p, `${JSON.stringify(state, null, 2)}\n`, 'utf8')
     return p
   } catch (e) {
-    console.error(`[run-guard] 状态写入失败（不影响放行，守卫退回 shadow）: ${e.message}`)
+    // 写失败**不是「没有这次派发」**，是「这次派发没落进状态账」—— 两者的可审计性要求不同。
+    // 旧实现只打一行 stderr 就吞掉：并发写下的偶发 rename 失败（Windows 上目标文件正被
+    // 别的进程打开 → EPERM）会让账本静默少一次计数，而调用方完全看不出异常
+    // —— 实测 10 并发跑出 shadow_runs=9、审计 10 行、全员 exit 0、**零降级告警**。
+    // 现在把失败**如实上报**（返回 false），由 commitGuardRun 归入降级通道：
+    // 这一次派发在账上不算数，但它在审计里留痕、在 stderr 里告警 —— 丢是可见的。
+    console.error(`[run-guard] 状态写入失败（本次计数不落状态账、审计已留痕，fail-open 不阻塞放行）: ${e.message}`)
     return null
   }
 }
@@ -588,6 +594,19 @@ export function dispatch({ config, baseDir, key, text = null, cwd = null, now = 
 export function commitGuardRun({ config, baseDir, key, entry, run = null, now = new Date(), required = DEFAULT_SHADOW_RUNS, skipped = null, probe = false }) {
   const statePath = guardStatePath(config, baseDir)
   const lockPath = `${statePath}.lock`
+  // 降级记录要引用「本次派发前」的状态（mode / 计数）。
+  // 旧代码在这里直接写 `mode` 与 `shadow.*` —— **两个都是未定义标识**：
+  // `mode` 只在 commit() 内部定义（那是锁内的局部 const），`shadow` 快照属于调用方作用域。
+  // 于是降级路径一进来就抛 ReferenceError（`mode is not defined`），被外层 fail-open
+  // 吞成一句「放行，不阻塞提交」→ 这次派发**彻底消失**：不进账、不告警、审计也没有。
+  // 2026-10-20 实测症状：并发账 9/10、降级数 0、审计 10 行、全员 exit 0 —— 判据把
+  // 「降级」当成了「静默丢」，因为降级通道从来没真正跑通过。
+  // 这里在函数入口自取一次快照（readGuardState 不抛，失败时给空账），降级记录用它。
+  const snap = readGuardState(config, baseDir)
+  const snapPrior = snap.state && snap.state.guards && snap.state.guards[key] && typeof snap.state.guards[key] === 'object'
+    ? snap.state.guards[key]
+    : {}
+  const snapMode = snapPrior.mode === 'blocking' ? 'blocking' : 'shadow'
   const commit = () => {
     // 锁内重读 = 叠加在最新账上（丢更新的根治点）。
     // 读不到账 ≠ 账是空的：瞬时读失败若按空账写回，会把并发者的计数整段覆盖，且毫无告警。
@@ -610,7 +629,7 @@ export function commitGuardRun({ config, baseDir, key, entry, run = null, now = 
 
     if (skipped !== null) {
       const record = { key, outcome: 'skipped', reason: skipped, last_result: 'skipped', mode_after: mode }
-      saveAndAudit(config, baseDir, state, statePath, key, record)
+      if (!saveAndAudit(config, baseDir, state, statePath, key, record)) return { __write_failed: true }
       return record
     }
 
@@ -709,7 +728,9 @@ export function commitGuardRun({ config, baseDir, key, entry, run = null, now = 
       pending_probes: isProbe && hit ? hitEntries.length : 0,
       detail: run.detail ?? null,
     }
-    saveAndAudit(config, baseDir, state, statePath, key, record, next)
+    // 写失败 → 如实上报，由外层归入降级通道（本次派发在账上不算数，但审计留痕 + 告警）。
+    // 静默返回 record 会让调用方以为这次派发已记账 —— 那正是「账本静默少一次」的成因。
+    if (!saveAndAudit(config, baseDir, state, statePath, key, record, next)) return { __write_failed: true }
     return record
   }
 
@@ -718,11 +739,17 @@ export function commitGuardRun({ config, baseDir, key, entry, run = null, now = 
   // 单轮 5s 在饱和负载下真实超时过（2026-10-17 全量套件实测并发账 4/10）。
   let committed = null
   let unreadable = null
-  for (let attempt = 0; attempt < 3 && (committed === null || (committed && committed.__unreadable)); attempt++) {
+  let writeFailed = null
+  for (let attempt = 0; attempt < 3 && (committed === null || (committed && (committed.__unreadable || committed.__write_failed))); attempt++) {
     committed = withFileLock(lockPath, commit)
     if (committed && committed.__unreadable) {
       unreadable = committed
       committed = null // 读不到账不算提交成功 —— 继续重试，仍失败则走下面的降级出口
+    } else if (committed && committed.__write_failed) {
+      // 写不进账同样不算提交成功：重试会重新读一遍最新账再写（叠加在别人的增量之上），
+      // 比直接放弃更可能把这一次记上。3 轮仍失败 → 走下面的降级出口（可见，不静默）。
+      writeFailed = committed
+      committed = null
     }
   }
   if (committed !== null) return committed
@@ -737,9 +764,9 @@ export function commitGuardRun({ config, baseDir, key, entry, run = null, now = 
     exit: run ? run.code : null,
     elapsed_ms: run ? run.elapsedMs : 0,
     last_result: run ? (run.outcome === 'pass' ? 'pass' : run.outcome === 'error' ? 'error' : 'fail') : 'skipped',
-    mode_after: mode,
-    shadow_runs: shadow.shadow_runs,
-    shadow_green: shadow.shadow_green,
+    mode_after: snapMode,
+    shadow_runs: Number.isInteger(snapPrior.shadow_runs) ? snapPrior.shadow_runs : 0,
+    shadow_green: Number.isInteger(snapPrior.shadow_green) ? snapPrior.shadow_green : 0,
     shadow_required: required,
     ever_hit: false,
     probe: probe === true,
@@ -751,7 +778,9 @@ export function commitGuardRun({ config, baseDir, key, entry, run = null, now = 
     degraded: true,
     detail: unreadable !== null
       ? `state-unreadable（锁内读状态账 ${STATE_READ_RETRIES} 轮仍失败：${unreadable.read} ${unreadable.error ?? ''}；本次计数未落状态账，审计已留痕）`
-      : 'lock-timeout（重试 3 轮耗尽，本次计数未落状态账，审计已留痕）',
+      : writeFailed !== null
+        ? 'state-write-failed（状态账写入重试 3 轮仍失败；本次计数未落状态账，审计已留痕）'
+        : 'lock-timeout（重试 3 轮耗尽，本次计数未落状态账，审计已留痕）',
   }
   flushAudit(config, baseDir, [
     {
@@ -760,11 +789,13 @@ export function commitGuardRun({ config, baseDir, key, entry, run = null, now = 
       guard: key,
       state: statePath,
       degraded: true,
-      reason: unreadable !== null ? 'state-unreadable' : 'lock-timeout',
+      reason: unreadable !== null ? 'state-unreadable' : writeFailed !== null ? 'state-write-failed' : 'lock-timeout',
     },
   ])
   if (unreadable !== null) {
     console.error(`[run-guard] 状态账读取失败（锁内重试 ${STATE_READ_RETRIES} 轮仍不可读：${unreadable.read} ${unreadable.error ?? ''}）→ 本次计数不落状态账、审计已留痕: ${statePath}`)
+  } else if (writeFailed !== null) {
+    console.error(`[run-guard] 状态写入失败（重试 3 轮仍写不进）→ 本次计数不落状态账、审计已留痕: ${statePath}`)
   } else {
     console.error(`[run-guard] 状态锁获取失败（重试 3 轮耗尽）→ 本次计数不落状态账、审计已留痕: ${lockPath}`)
   }
@@ -788,8 +819,12 @@ function saveAndAudit(config, baseDir, state, statePath, key, record, next = nul
     ...record,
     mode: record.mode_after ?? record.mode ?? state.guards[key]?.mode ?? 'shadow',
   }
-  writeGuardState(config, baseDir, state)
+  const written = writeGuardState(config, baseDir, state) !== null
+  // 写失败时**不写常规审计行**：降级通道会写一条 degraded 审计行。
+  // 两边都写 = 一次派发两条审计 = 「审计行数 == 派发数」这个对账口径就废了。
+  if (!written) return false
   flushAudit(config, baseDir, [{ tool: 'run-guard', action: `guard-${record.outcome}`, guard: key, state: statePath, ...record }])
+  return true
 }
 
 function printReport(entry, run, shadow, record, promoted, hitEntries) {
@@ -800,7 +835,7 @@ function printReport(entry, run, shadow, record, promoted, hitEntries) {
   if (run.detail) console.error(`${head} · ${run.detail}（fail-open：守卫自身异常不阻塞提交）`)
   else if (run.outcome === 'shadow-warn') console.error(`${head} · 命中判据但尚在 shadow：只警告不阻断（exit 0），阻断权须攒满绿运行${hitEntries.length > 0 ? ` · 命中已记账（${record.hit_kind === 'probe' ? 'probe 账，不回写条目正文' : 'shadow 期同样算野外复发实证，待 sweep 回写'}）: ${hitEntries.join(', ')}` : ''}`)
   else if (run.outcome === 'block') console.error(`${head} · 命中判据 → 阻断（exit 2）${hitEntries.length > 0 ? ` · 记账入运行时状态（${record.hit_kind === 'probe' ? 'probe 账' : 'wild，待 sweep 回写'}）: ${hitEntries.join(', ')}` : ''}`)
-  else if (record.degraded) console.error(`${head} · 锁竞争重试 3 轮耗尽：本次计数未落状态账（审计已留痕，fail-open 不阻塞提交）`)
+  else if (record.degraded) console.error(`${head} · ${record.detail ?? '本次计数未落状态账'}（审计已留痕，fail-open 不阻塞提交）`)
   else if (run.outcome === 'pass') console.error(head)
   if (promoted) console.error(`[run-guard] ${entry.key} 升 blocking（shadow ${record.shadow_green}/${record.shadow_runs} 全绿）—— 自此命中判据即阻断`)
 }
