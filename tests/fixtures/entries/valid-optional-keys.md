@@ -12,7 +12,7 @@ category: 经验教训
 resolved_date: "2026-10-16"
 resolved_by: "174f4032d（修复） / Wave 6 票 G4c（结案复核）"
 event_ids: ["evt-20261016-001", "evt-20261017-002"]
-skill_ref: vvicat-testing#测试范围由影响面决定
+skill_ref: example-skill#测试范围由影响面决定
 ---
 
 # 合规 fixture：全部 7 个可选键齐备（示例数据，非真实教训）

@@ -92,7 +92,7 @@ export const OPTIONAL_ENTRY_KEY_TYPES = {
   // 是它的本职。事件侧的 `entry_id` 字段保留在契约内（事件自身形态），但**拍1 判定以条目侧的
   // `event_ids` 为准**（trace.mjs）—— 两份事实源互相覆盖是最坏的一种漂移，宁可只留一个方向。
   event_ids: 'event-id[]',
-  // 规程出处（2026-10-17）：`<skill-dir>#<章节标题>`，如 `vvicat-testing#测试范围由影响面决定`。
+  // 规程出处（2026-10-17）：`<skill-dir>#<章节标题>`，如 `example-skill#测试范围由影响面决定`。
   // **与 guard_ref 语义互斥**（见 validateEntry 的双挂判据）：guard_ref = 机器判据（registry 成员），
   // skill_ref = 人读的规程（无派发、无消费方）。两者形态刻意不同 —— skill-dir 段与 registry key
   // 共用小写连字符形态，章节标题自由文本（可含空格、不含 `#`），故 `#` 本身即分界符。
@@ -158,8 +158,8 @@ const GUARD_KEY_RE = new RegExp(`^${LOWER_HYPHEN_NAME}$`)
  * 章节标题段自由文本：非空、不含 `#`（`#` 是分界符，出现两次就没法解析），允许空格与 CJK。
  *
  * 故意**不宽松**的三种形态（各对应一种真实手滑，缺判据即静默降级）：
- *   `Vvicat-testing#x`（大写）—— skill 目录名是小写的，大写必是笔误；
- *   `vvicat-testing`（缺 `#`）—— 分不清是 skill 名还是章节，解析不出来；
+ *   `Example-skill#x`（大写）—— skill 目录名是小写的，大写必是笔误；
+ *   `example-skill`（缺 `#`）—— 分不清是 skill 名还是章节，解析不出来；
  *   `a--b#c`（连续连字符）—— 与 registry key 同判据，skill 名不可能这么写。
  */
 const SKILL_REF_RE = new RegExp(`^${LOWER_HYPHEN_NAME}#[^#]+$`)

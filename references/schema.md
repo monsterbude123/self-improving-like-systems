@@ -134,7 +134,7 @@ recency .15，半衰 30 天）。**审计全量落盘**：每条被召回的条�
 
 **`skill_ref` 为什么单开一键而不放宽 `guard_ref`（2026-10-17 裁决）**：
 有一类条目的真实内容**不是新规则**，而是「某个 skill 的某一节已经写了」——它没有、也不该有机器判据。
-此前唯一的表达方式是把 `guard_ref` 写成 `vvicat-testing#测试范围由影响面决定`，代价是：
+此前唯一的表达方式是把 `guard_ref` 写成 `example-skill#测试范围由影响面决定`，代价是：
 下游五处（trace 拍3 找 registry + 判 `covered_entries`、拍4 读状态账、D13 存在性、
 verify 观测账 `guard_keys`）全部假定 `guard_ref` 是 registry 成员，塞进 `skill#section`
 等于在一条链上同时开六个口子，且**每一个口子都静默**（查不到就当「没登记」，永不报错）。
@@ -460,7 +460,7 @@ no-evidence`，判据与退役共用 `evidenceStrength`）打进报表，供人�
 定位实现：`findEntryFiles()`（复数，看全集）与 `findEntryFile()`（单数，**≥2 个匹配时返回 `null`**，
 即「拿不准就不动」），判据与报错文案共用 `ambiguousIdError()`，三处措辞不漂移。
 
-**新增撞号由门禁拦住**：`D13-entry-guard-binding.mjs` 在全量模式下做「ID → 文件」唯一性断言，
+**新增撞号由门禁拦住**：`entry-binding-gate.mjs` 在全量模式下做「ID → 文件」唯一性断言，
 存量撞号走 **D6 的同一份基线** `scripts/gates/baselines/D6-learnings-duplicate-ids.txt` 显式豁免
 （唯一归宿，不另立一套）。D6 与 D13 的 PASS 输出都**如实报出豁免组数** —— 票 H3 审计：
 D6 此前固定打印「编号唯一性全部合规」，而基线里躺着 7 组真实撞号，属措辞误导，已改为
@@ -482,7 +482,7 @@ D6 此前固定打印「编号唯一性全部合规」，而基线里躺着 7 �
 
 | 消费阶段 | 读取 |
 |---|---|
-| 条目门禁 | §1 Entry.guard_ref 形态（存在性自建）+ registry + config；§1.4 `skill_ref` 形态与「双挂互斥」判据（**均只在 `validate.mjs` 内，`scripts/gates/D13-entry-guard-binding.mjs` 不读该键** —— `status !== 'resolved'` 已放行规程型条目） |
+| 条目门禁 | §1 Entry.guard_ref 形态（存在性自建）+ registry + config；§1.4 `skill_ref` 形态与「双挂互斥」判据（**均只在 `validate.mjs` 内，`scripts/gates/entry-binding-gate.mjs` 不读该键** —— `status !== 'resolved'` 已放行规程型条目） |
 | 注入引擎 | `config.injection`（top_k / budget_chars）+ `config.scope` + `kill_switch.injection` |
 | 生命周期接线 | `config.injection.budget_ms ≪ timeout_ms` + `config.hook.default_scopes`（SessionStart 无 prompt 时的保守默认域，空数组 = 不注入） + `kill_switch.injection`；接线形态见 `hook-wiring.md` |
 | 事件捕获 | §2 Event + `config.event_sources` + `storage.events_dir`（文件切分 = 事件层，实例按日分片 JSONL）+ `kill_switch.capture`（off 时零写盘零检索） |

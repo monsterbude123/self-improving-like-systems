@@ -123,7 +123,9 @@ describe('产出草案（Entry 契约 + 三要素）', () => {
       assert.ok(build, `未找到 ENOENT 簇草案: ${JSON.stringify(proposalsOf(tmp))}`)
       const text = readFileSync(path.join(tmp, 'proposals', build), 'utf8')
       assert.match(text, /recurrence: 5/, 'recurrence 未取跨分片求和')
-      assert.match(text, /簇成员 fingerprint：`fp-2d68f00c5af2f907`/, '归并后应只有一个成员 fingerprint')
+      // 指纹随 fixture 消息里的脚本名走（脚本名改为中性形态后骨架变化，指纹随之重算），
+      // 两分片共用同一骨架 ⇒ 同一指纹 ⇒ recurrence 跨分片求和成立。
+      assert.match(text, /簇成员 fingerprint：`fp-53c2f46fe88b7ee9`/, '归并后应只有一个成员 fingerprint')
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
@@ -275,7 +277,7 @@ describe('陈旧清扫（proposals 目录收敛到「一簇一份」）', () => 
       for (const s of shards) {
         for (const line of readFileSync(path.join(tmp, 'events', s), 'utf8').split('\n').filter(Boolean)) {
           const rec = JSON.parse(line)
-          if (!/2d68f00c5af2f907/.test(rec.fingerprint)) kept.push(line)
+          if (!/53c2f46fe88b7ee9/.test(rec.fingerprint)) kept.push(line)
         }
       }
       writeFileSync(path.join(tmp, 'events', shards[0]), kept.length > 0 ? `${kept.join('\n')}\n` : '', 'utf8')

@@ -4,6 +4,6 @@
 # 派发时按 mode=debt-stub 跳过 —— 「注册表里有条目」不等于「这条债有人看着」。
 guards:
   - key: legacy-unbound
-    args: ['scripts/gates/D13-entry-guard-binding.mjs']
+    args: ['scripts/gates/entry-binding-gate.mjs']
     when: always
     mode: debt-stub

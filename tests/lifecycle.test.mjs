@@ -22,6 +22,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { stripComments } from './lib/strip-comments.mjs'
+import { couplingHits } from './lib/coupling-scan.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SKILL_ROOT = path.resolve(HERE, '..')
@@ -846,13 +847,14 @@ describe('破坏测试（红向 · 必须报错而非静默）', () => {
 
 describe('通用性（零项目耦合）', () => {
   it('verify.mjs 不含本仓项目物（路径 / 域名 / 门禁名硬编码）', () => {
-    // 全目录扫描面与 banned 名单的**单一归宿** = approve.test.mjs 的「通用性」那条
-    // （2026-10-16 F5：点名式名单会漏文件）。此处只保留 verify 专属的 destructive 断言。
+    // 全目录扫描面与禁用词表的**单一归宿** = tests/lib/coupling-scan.mjs
+    // （2026-10-16 F5：点名式名单会漏文件；2026-10-20：两份各存一份的词表会不一致 ——
+    //  本仓那份还少一条，于是「看哪份」本身就是漏网自由度）。此处只保留 verify 专属的断言。
     // 判注释一律经共用的 stripComments（「注释里的不算」—— 否则「修掉硬编码后在注释里
     // 说明『此前此处硬编码本仓 X』」本身就会让门禁变红，修复动作与守卫互锁）。
-    const banned = [/\.learnings\b/, /ai-short-studio/, /vvicat/i, /devbox/, /D13-entry-guard-binding/, /touchesExperienceSystem/]
-    const src = stripComments(readFileSync(VERIFY, 'utf8'))
-    for (const re of banned) assert.ok(!re.test(src), `verify.mjs 命中项目物 ${re}（注释已剥离 ⇒ 可执行/用户可见字符串）`)
+    for (const name of couplingHits(readFileSync(VERIFY, 'utf8'))) {
+      assert.fail(`verify.mjs 命中项目物 ${name}（注释已剥离 ⇒ 可执行/用户可见字符串）`)
+    }
   })
 
   it('退役/恢复只做整文件移动，无删除路径（append-only）', () => {

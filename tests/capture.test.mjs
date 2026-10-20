@@ -106,12 +106,12 @@ describe('事件落盘（§2 Event 契约）', () => {
   })
 })
 
-describe('双形态路径归一化（宿主 / devbox）', () => {
-  it('同一错误的宿主形态与 devbox 形态 → 同一 fingerprint（同一行归并）', () => {
+describe('双形态路径归一化（宿主 / 容器）', () => {
+  it('同一错误的宿主形态与容器形态 → 同一 fingerprint（同一行归并）', () => {
     const tmp = freshTmp()
     try {
       const host = readFileSync(path.join(tmp, 'host-form.txt'), 'utf8').trim()
-      const box = readFileSync(path.join(tmp, 'devbox-form.txt'), 'utf8').trim()
+      const box = readFileSync(path.join(tmp, 'container-form.txt'), 'utf8').trim()
       const a = JSON.parse(runCapture(['--source', 'tool', '--kind', 'tool_error', '--text', host, '--json'], tmp).stdout.trim())
       const b = JSON.parse(runCapture(['--source', 'tool', '--kind', 'tool_error', '--text', box, '--json'], tmp).stdout.trim())
       assert.equal(a.fingerprint, b.fingerprint, `双形态应同 fingerprint:\n${a.fingerprint}\n${b.fingerprint}`)
@@ -130,7 +130,7 @@ describe('双形态路径归一化（宿主 / devbox）', () => {
     const tmp = freshTmp()
     try {
       runCapture(['--source', 'tool', '--kind', 'tool_error', '--text', 'ENOENT: build context not found at /workspace/app/x/D13.mjs:42', '--json'], tmp)
-      const other = readFileSync(path.join(tmp, 'devbox-form-other.txt'), 'utf8').trim()
+      const other = readFileSync(path.join(tmp, 'container-form-other.txt'), 'utf8').trim()
       runCapture(['--source', 'tool', '--kind', 'tool_error', '--text', other, '--json'], tmp)
       const rows = readShard(tmp)
       assert.equal(rows.length, 2, `不同错误码必须分开: ${JSON.stringify(rows.map((r) => r.fingerprint))}`)

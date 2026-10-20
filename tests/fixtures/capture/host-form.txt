@@ -1,1 +1,1 @@
-docker ENOENT: build context not found at D:\workspacexample-repo\.worktrees\demo\scripts\gates\D13-entry-guard-binding.mjs:42 after 1200ms
+docker ENOENT: build context not found at D:\workspacexample-repo\.worktrees\demo\scripts\gates\entry-binding-gate.mjs:42 after 1200ms

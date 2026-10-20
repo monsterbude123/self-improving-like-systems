@@ -26,7 +26,7 @@ import { spawnSync } from 'node:child_process'
 import {
   copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { tmpdir, homedir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseYaml } from '../scripts/lib/yaml-lite.mjs'
@@ -295,10 +295,51 @@ test('零耦合 · 演练与体检全程没在临时项目里写 .git/info/exclu
   assert.equal(after, before, '接入链路改了 .git/info/exclude —— 运行时目录必须由人显式 exclude')
 })
 
-test('零耦合 · 接入链路产出里没有任何指向主检出 ai-short-studio-monster 的路径', () => {
+/**
+ * 产出文本里泄漏了哪些「协议层不该知道的位置」。抽成函数是为了能被注入测试：
+ * 判据写在 `it()` 里的话，注入测试只能重复一遍同样的表达式，
+ * 于是「判据变了、注入测试没变」这种假绿照样通过。
+ */
+function leakReasons(text, needles) {
+  return needles.filter(([value]) => value && value.length > 1 && text.includes(value)).map(([, what]) => what)
+}
+
+/** 协议层自己所在检出根 + 用户家目录，两种分隔符形态。协议层唯一「知道」的位置就是这两处。 */
+function selfLeaks() {
+  // SKILL_ROOT 由 import.meta.url 推出（不是某个写死的仓名），并就地校验它确实是检出根 ——
+  // 层级写错一级不会报错，只会让判据悄悄变弱，所以这里把它钉住。
+  assert.ok(existsSync(path.join(SKILL_ROOT, 'scripts')), `SKILL_ROOT 层级有误（它不像检出根）: ${SKILL_ROOT}`)
+  const HOME = homedir()
+  return [
+    [SKILL_ROOT, '协议层检出根'],
+    [SKILL_ROOT.replace(/\\/g, '/'), '协议层检出根（正斜杠形态）'],
+    [HOME, '用户家目录'],
+    [HOME.replace(/\\/g, '/'), '用户家目录（正斜杠形态）'],
+  ]
+}
+
+test('零耦合 · 接入链路产出里没有任何指向协议层自身检出位置或用户家目录的路径', () => {
+  // 为什么改成自指形态：原来的判据是「产出里不含字符串 <某个仓名>」，它只对**那一个仓名**
+  // 有效 —— 换个人接、换个仓名接，这条断言就退化成「没提到这个我不认识的名字」，恒真。
+  // 它证明的从来不是「没泄漏宿主位置」，而是「不认识这个词」。
+  // 协议层不知道宿主仓叫什么，所以它的断言也不该知道；能自证的泄漏只有一类：
+  // **协议层把自己所在的检出位置 / 用户家目录写进了产出**。那才是可移植性真正的破绽。
+  const needles = selfLeaks()
+  assert.ok(needles.filter(([v]) => v.length > 1).length >= 2, '自指判据自身失效：检出根与家目录都没解析出来')
   const project = onboard()
   for (const rel of [CONFIG, REGISTRY, '.zcode/config.json']) {
     const text = readFileSync(path.join(project, rel), 'utf8')
-    assert.ok(!text.includes('ai-short-studio-monster'), `${rel} 泄漏了主检出路径 —— 一旦泄漏，这条验收就只在我机器上成立`)
+    const leaked = leakReasons(text, needles)
+    assert.deepEqual(leaked, [], `${rel} 泄漏了 ${leaked.join('、')} —— 一旦泄漏，这条验收就只在本机成立`)
   }
+})
+
+test('破坏测试：注入一条含检出根的产出 → 泄漏判据必须报出来（不得恒绿）', () => {
+  const needles = selfLeaks()
+  const root = needles.find(([v]) => v.length > 1)[0]
+  assert.deepEqual(leakReasons(`# 泄漏样例 ${root}\n`, needles), ['协议层检出根'], '含检出根的产出必须被判为泄漏')
+  assert.deepEqual(leakReasons(`# 正常产出 ${JSON.stringify({ guards: [] })}\n`, needles), [], '干净产出不得被误报')
+  // 家目录形态同样要能认出（Windows 上路径分隔符不同，只测检出根会漏掉一半）
+  const home = needles.find(([, what]) => what === '用户家目录')[0]
+  assert.deepEqual(leakReasons(`# ${home}\n`, needles), ['用户家目录'], '含家目录的产出必须被判为泄漏')
 })

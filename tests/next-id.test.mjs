@@ -140,10 +140,13 @@ describe('learnings 编号分配器', () => {
     const fakeScript = path.join(dir, 'next-id.sh')
     try {
       const src = readFileSync(SCRIPT, 'utf8')
-      const broken = src.replace(
-        '"$MAIN_ROOT"/.worktrees/*/.learnings; do',
-        '/nonexistent-worktrees-layer; do',
-      )
+      // 注入锚点**从真脚本里抽**，不在本测试里另写一份那行字面量：
+      // 写一份 = 测试里多一处要跟着实现同步的副本，改了实现忘了改副本时
+      // 「破坏注入失败」与「破坏生效」长得一模一样（2026-10-20 顺带去掉了锚点里的项目物词）。
+      const layer = /"\$MAIN_ROOT"\/\.worktrees\/\*\/(\.[a-z-]+)/.exec(src)
+      assert.ok(layer, `破坏注入失败：脚本里找不到兄弟工作树那层（实现形态变了？）:\n${src}`)
+      const anchor = `"$MAIN_ROOT"/.worktrees/*/${layer[1]}; do`
+      const broken = src.replace(anchor, '/nonexistent-worktrees-layer; do')
       assert.notEqual(broken, src, '破坏注入失败：没找到兄弟工作树那层（实现形态变了？）')
       writeFileSync(fakeScript, broken, 'utf8')
       const r = spawnSync('bash', [fakeScript, 'LRN'], {

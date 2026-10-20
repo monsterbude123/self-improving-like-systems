@@ -23,10 +23,43 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { stripComments } from './lib/strip-comments.mjs'
+import { PROJECT_NOUNS, FIXTURE_FORBIDDEN_NOUNS, couplingHits, hitsInFile, repoNounFiles, fixtureNounFiles } from './lib/coupling-scan.mjs'
 import { addEntryToCoverage } from '../scripts/approve.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SKILL_ROOT = path.resolve(HERE, '..')
+
+/**
+ * 本文件**不得自己持有被禁形态**（它也在扫描面里）。需要样本词时一律从共享词表取，
+ * 而不是就地写一个 —— 就地写等于在扫描面里埋一份副本，改词表时它不会跟着变，
+ * 于是「词表已收紧、这份副本还在」变成静默通过。probe 取词表首条（learning-dir）。
+ */
+const probe = PROJECT_NOUNS[0]
+
+/**
+ * 豁免台账判定：把「各文件的命中」折成「应当判红的理由列表」，空数组 = 通过。
+ * 三种越界各自判红：① 命中但未登记；② 登记了却实际没命中（豁免已失效，登记变成永久免检）；
+ * ③ 登记的词条集合与实际不符（词表改过，豁免没跟上）。
+ *
+ * 单独抽成纯函数是为了能对它做破坏测试：台账逻辑写在 `it()` 里就只能在真实扫描面上生效，
+ * 而真实扫描面是干净的 —— 于是「台账判据恒绿」与「扫描面确实干净」无法区分。
+ */
+function ledgerViolations(entries, allowlist) {
+  const allow = new Map(allowlist.map((a) => [a.file, a]))
+  const violations = []
+  for (const e of entries) {
+    if (e.hits.length === 0) continue
+    const a = allow.get(e.file)
+    if (!a) {
+      violations.push(`${e.file} 命中项目物 [${e.hits.join(', ')}] 且不在豁免台账内`)
+      continue
+    }
+    const declared = [...a.expect].sort().join(',')
+    const actual = [...new Set(e.hits)].sort().join(',')
+    if (declared !== actual) violations.push(`${e.file} 豁免台账声明 [${declared}] 与实际命中 [${actual}] 不符`)
+  }
+  return violations
+}
 const APPROVE = path.join(SKILL_ROOT, 'scripts', 'approve.mjs')
 const RUNNER = path.join(SKILL_ROOT, 'scripts', 'run-guard.mjs')
 const CAPTURE = path.join(SKILL_ROOT, 'scripts', 'capture.mjs')
@@ -763,7 +796,8 @@ describe('通用性（零项目耦合）', () => {
     // 「不在名单里」等于「漏网」，而 hook-session-start.mjs 的降级提示里确实写死了
     // 本仓条目目录（用户可见字符串，第二个项目会指向不存在的目录）。
     // 改为**枚举整个 scripts/ 目录**（含 lib/）：新增脚本默认进扫描面，漏网形态被消除。
-    const banned = [/\.learnings\b/, /ai-short-studio/, /vvicat/i, /devbox/, /D13-entry-guard-binding/, /touchesLearnings/, /touchesExperienceSystem/]
+    // 词表不自持：2026-10-20 起判据唯一归宿 = tests/lib/coupling-scan.mjs（此前此处与
+    // lifecycle.test.mjs 各存一份且不一致，两份判据里「看哪份」本身就是漏网自由度）。
     const dir = path.join(SKILL_ROOT, 'scripts')
     const files = [
       ...readdirSync(dir).filter((f) => f.endsWith('.mjs')).map((f) => path.join(dir, f)),
@@ -772,25 +806,101 @@ describe('通用性（零项目耦合）', () => {
     assert.ok(files.length >= 12, `扫描面异常：只枚举到 ${files.length} 个脚本（应覆盖全部 scripts/*.mjs + scripts/lib/*.mjs）`)
     assert.ok(files.some((f) => f.endsWith('hook-session-start.mjs')), '扫描面必须含 hook-session-start.mjs（本次 F5 的漏网文件）')
     for (const f of files) {
-      const src = stripComments(readFileSync(f, 'utf8'))
-      for (const re of banned) assert.ok(!re.test(src), `${path.basename(f)} 命中项目物 ${re}（注释已剥离 ⇒ 这是可执行/用户可见字符串）`)
+      for (const name of couplingHits(readFileSync(f, 'utf8'))) {
+        assert.fail(`${path.basename(f)} 命中项目物 ${name}（注释已剥离 ⇒ 这是可执行/用户可见字符串）`)
+      }
     }
   })
 
+  it('测试源码自身不含本仓项目物（对外分发时测试夹带的黑话同样是广播）', () => {
+    // 2026-10-20 扩面。此前扫描面只有 scripts/：判据管住了产品代码，却没管住**判据自己**——
+    // 于是 tests/ 里逐渐攒下了原仓的仓名、门禁脚本名、容器形态专名，而这些文件是要随包分发的。
+    // 扩面后必须配一份**显式豁免台账**：豁免写明「凭什么这个文件合法地持有被禁形态」，
+    // 并声明它命中的是**哪几条**（不是「几次」——按次数声明的话，改词表会静默放宽）。
+    const ALLOWLIST = [
+      {
+        file: 'coupling-scan.mjs',
+        // 它就是判据本身：全部被禁形态以正则字面量 + 字面量形态持有，删不掉也不该删。
+        why: '词表正本（以正则/字面量形态持有全部被禁形态）',
+        expect: PROJECT_NOUNS.map((n) => n.name),
+      },
+    ]
+    const files = repoNounFiles()
+    assert.ok(files.length >= 20, `扫描面异常：只枚举到 ${files.length} 个文件（应覆盖全部 tests/*.test.mjs + tests/lib/*.mjs）`)
+    const violations = ledgerViolations(files.map((f) => ({ file: path.basename(f), hits: hitsInFile(f) })), ALLOWLIST)
+    assert.deepEqual(violations, [], `测试源码里混进了项目物:\n${violations.join('\n')}`)
+  })
+
+  it('fixtures 不含组织专有名词（只挡 org 层：布局类词条在 fixture 里合法）', () => {
+    // 为什么 fixture 要单独判、且只判 org 层：fixture 的职责是「长得像真的报错」，
+    // 所以 `.learnings/foo` 这种**通用目录约定**在它里面合法存在（它要的就是真路径形态）。
+    // 但组织专有名词（仓名 / 产品代号 / 内部门禁编号 / 内部脚本名）在 fixture 里毫无正当理由 ——
+    // 换成中性写法完全不削弱测试，却能避免随包分发时广播出去。
+    // 不剥注释：fixture 不是代码，没有注释语法；且样本行就是要给人看的，剥了等于放过文档里的泄漏。
+    const files = fixtureNounFiles()
+    assert.ok(files.length >= 10, `fixture 扫描面异常：只枚举到 ${files.length} 个文件（应覆盖 tests/fixtures 下的全部文本样本）`)
+    for (const f of files) {
+      const hits = hitsInFile(f, FIXTURE_FORBIDDEN_NOUNS)
+      assert.deepEqual(hits, [], `fixture ${path.relative(SKILL_ROOT, f)} 含组织专有名词 ${hits.join('、')} —— 换成中性写法不削弱测试`)
+    }
+  })
+
+  it('破坏测试：fixtures 扫描判据不得恒绿（往 fixture 注入 org 词必须变红；layout 词不该误伤）', () => {
+    // 样本从词表派生而**不写死字面量**：写死就等于本文件自己持有项目物，
+    // 会被上一条「测试源码自身不含本仓项目物」判红 —— 那是对的，写死才是错的。
+    const org = FIXTURE_FORBIDDEN_NOUNS
+    const byName = (n) => org.find((x) => x.name === n)
+    const layout = PROJECT_NOUNS.filter((n) => n.tier === 'layout')
+    const dir = mkdtempSync(path.join(tmpdir(), 'si-fixture-break-'))
+    try {
+      mkdirSync(path.join(dir, 'fixtures', 'nested'), { recursive: true })
+      const bad = path.join(dir, 'fixtures', 'nested', 'sample.txt')
+      writeFileSync(bad, `error at D:\\ws\\${byName('repo-name').literal}\\x.mjs:${byName('gate-file').literal}\n`, 'utf8')
+      const got = hitsInFile(bad, FIXTURE_FORBIDDEN_NOUNS)
+      assert.ok(got.includes('repo-name') && got.includes('gate-file'), `org 层两条都该命中，实际 ${JSON.stringify(got)}`)
+      // 反向：layout 层词条**不该**被 org 层判据抓到（抓到就说明两层判据没分开，
+      // 将来必然有人为了放过合法 fixture 路径而放宽 org 层）
+      const layoutOnly = path.join(dir, 'fixtures', 'nested', 'layout.txt')
+      writeFileSync(layoutOnly, `entries live in ${layout[0].literal}/ and ${layout[1].literal} triggers it\n`, 'utf8')
+      assert.deepEqual(hitsInFile(layoutOnly, FIXTURE_FORBIDDEN_NOUNS), [], 'layout 层词条不该被 fixture 判据命中')
+      assert.ok(hitsInFile(layoutOnly, PROJECT_NOUNS).length > 0, '同一段文本在完整词表下必须命中（证明分层不是把判据削弱成空）')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('破坏测试：豁免台账判据不得恒绿（注入即红，且每条词都必须真能命中）', () => {
+    // 前半：词表里任何一条 regex 写坏（转义错、锚点错）都会让它**永不命中**，
+    // 而永不命中看起来和「本来就干净」完全一样 —— 那就是一条形同虚设的守卫。逐条打靶。
+    for (const n of PROJECT_NOUNS) {
+      assert.ok(couplingHits(`const s = '指向 ${n.literal} 的路径'`).includes(n.name), `词条 ${n.name} 对自己的样本都不命中（regex 写坏了？）`)
+      assert.ok(!couplingHits(`// 注释里的 ${n.literal} 不算\nconst a = 1\n`).includes(n.name), `词条 ${n.name} 命中了注释（判注释逻辑坏了？）`)
+    }
+    // 后半：台账逻辑本身。构造三种越界 —— 未登记的命中、台账里写了但实际没命中、登记词条对不上。
+    const injected = { file: 'injected.test.mjs', hits: [PROJECT_NOUNS[0].name] }
+    const ok = { file: 'coupling-scan.mjs', hits: PROJECT_NOUNS.map((n) => n.name) }
+    const drift = { file: 'coupling-scan.mjs', hits: PROJECT_NOUNS.slice(1).map((n) => n.name) }
+    const allow = [{ file: 'coupling-scan.mjs', why: 'x', expect: PROJECT_NOUNS.map((n) => n.name) }]
+    assert.equal(ledgerViolations([injected], allow).length, 1, '未登记的文件持有项目物 → 必须判红')
+    assert.equal(ledgerViolations([drift], allow).length, 1, '台账声明的命中与实际不符 → 必须判红')
+    assert.deepEqual(ledgerViolations([ok], allow), [], '如实登记的豁免必须放行（否则豁免台账无法使用）')
+  })
+
   it('剥离注释的辅助函数本身有效（守卫判据不得恒真/恒红）', () => {
-    // 防「守卫写法坏了 ⇒ 什么都不匹配 ⇒ 恒绿」。正向：注释里的项目物必须被剥掉。
-    assert.ok(!/\.learnings\b/.test(stripComments('// 此前硬编码 .learnings/ 目录\nconst a = 1\n')))
+    // 防「守卫写法坏了 ⇒ 什么都不匹配 ⇒ 恒绿」。样本词从共享词表取（probe），
+    // 本文件不留副本 —— 副本会让「词表已收紧」在这里失去意义。
+    assert.ok(!probe.re.test(stripComments(`// 此前硬编码 ${probe.literal}/ 目录\nconst a = 1\n`)))
     // 反向：字符串里的项目物必须**保留**（否则守卫形同虚设）。
-    assert.ok(/\.learnings\b/.test(stripComments("const s = '条目见 .learnings/ 或重试'\n")))
+    assert.ok(probe.re.test(stripComments(`const s = '条目见 ${probe.literal}/ 或重试'\n`)))
     // 块注释同理。
-    assert.ok(!/devbox/.test(stripComments('/* 历史：devbox 路径归一 */\nconst b = 2\n')))
+    assert.ok(!probe.re.test(stripComments(`/* 历史：${probe.literal} 路径归一 */\nconst b = 2\n`)))
     // 正则字面量守卫（2026-10-16 实测的反向恒红）：正则里同时含 ' 与 " 时，
     // 不识别正则会让词法状态错位，其后的**真注释**被当代码 ⇒ 假红。
-    const regexThenComment = "const RE = /[A-Za-z]:[\\\\/][^\\s'\"()]+/g\n// devbox 双形态归一\nconst c = 3\n"
-    assert.ok(!/devbox/.test(stripComments(regexThenComment)), '正则字面量后紧跟的行注释必须仍被剥掉（词法状态不得错位）')
+    const regexThenComment = `const RE = /[A-Za-z]:[\\\\/][^\\s'"()]+/g\n// ${probe.literal} 双形态归一\nconst c = 3\n`
+    assert.ok(!probe.re.test(stripComments(regexThenComment)), '正则字面量后紧跟的行注释必须仍被剥掉（词法状态不得错位）')
     // 且除号不能被误当正则起点（否则后半段代码会被整段吞掉）。
-    const division = "const q = total / count\n// devbox x\nconst d = 1\n"
-    assert.ok(!/devbox/.test(stripComments(division)), '除号后的注释仍须被剥掉')
+    const division = `const q = total / count\n// ${probe.literal} x\nconst d = 1\n`
+    assert.ok(!probe.re.test(stripComments(division)), '除号后的注释仍须被剥掉')
     assert.ok(/const q = total \/ count/.test(stripComments(division)), '除号表达式本身不得被当作正则吞掉')
   })
 

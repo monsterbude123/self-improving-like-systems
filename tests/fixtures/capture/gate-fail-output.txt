@@ -1,3 +1,3 @@
 FAIL: guard entry-guard-binding blocked commit
-  ERR: D:\workspacexample-repo\.worktrees\demo\scripts\gates\D13-entry-guard-binding.mjs 退出码 2
+  ERR: D:\workspacexample-repo\.worktrees\demo\scripts\gates\entry-binding-gate.mjs 退出码 2
   原因: ERR-20261016-001 缺 guard_ref

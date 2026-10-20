@@ -552,22 +552,22 @@ describe('validateEntry 纯函数（供门禁/注册等消费方复用，不重�
   })
 
   it('skill_ref 合规形态（规程出处）→ 空违规：guard_ref 为 null 时规程型条目合法', () => {
-    const good = validateEntry({ ...validFm, guard_ref: null, skill_ref: 'vvicat-testing#测试范围由影响面决定' }, scopeValues)
+    const good = validateEntry({ ...validFm, guard_ref: null, skill_ref: 'example-skill#测试范围由影响面决定' }, scopeValues)
     assert.deepEqual(good, [], `合法 skill_ref 不该报违规：${JSON.stringify(good)}`)
     // 章节标题自由文本：含空格 / CJK / 英文均可，skill-dir 段仍受小写连字符约束
-    for (const ok of ['vvicat-testing#Run tests by blast radius', 'a#x', 'self-improving-like-systems#§3.3 退役']) {
+    for (const ok of ['example-skill#Run tests by blast radius', 'a#x', 'self-improving-like-systems#§3.3 退役']) {
       const v = validateEntry({ ...validFm, guard_ref: null, skill_ref: ok }, scopeValues)
       assert.deepEqual(v, [], `skill_ref: ${JSON.stringify(ok)} 应合规，实际 ${JSON.stringify(v)}`)
     }
   })
 
   it('破坏：guard_ref 塞 skill#section 必须判红（严格性不得被规程出处这个需求放松）', () => {
-    const v = validateEntry({ ...validFm, guard_ref: 'vvicat-testing#测试范围由影响面决定' }, scopeValues)
+    const v = validateEntry({ ...validFm, guard_ref: 'example-skill#测试范围由影响面决定' }, scopeValues)
     assert.ok(v.some((x) => /guard_ref 形态非法/.test(x)), `guard_ref 收到 skill#section 必须判红，实际 ${JSON.stringify(v)}`)
   })
 
   it('破坏：guard_ref 与 skill_ref 同时非 null 必须判红（机器判据与规程出处互斥）', () => {
-    const v = validateEntry({ ...validFm, guard_ref: 'entry-guard-binding', skill_ref: 'vvicat-testing#测试范围由影响面决定' }, scopeValues)
+    const v = validateEntry({ ...validFm, guard_ref: 'entry-guard-binding', skill_ref: 'example-skill#测试范围由影响面决定' }, scopeValues)
     assert.ok(v.some((x) => /双挂/.test(x)), `双挂必须判红，实际 ${JSON.stringify(v)}`)
     // 反向不误伤：只有 guard_ref（无 skill_ref 键）合法；只有 skill_ref（guard_ref: null）合法。
     // 注意 `skill_ref: null` 本身即红 —— 与 `date` / `event_ids` 等既有可选键同口径
@@ -580,7 +580,7 @@ describe('validateEntry 纯函数（供门禁/注册等消费方复用，不重�
   })
 
   it('破坏：skill_ref 形态错必须判红（大写 / 缺 # / 连续连字符 / 空章节 / 非字符串）', () => {
-    for (const bad of ['Vvicat-testing#x', 'vvicat-testing', 'a--b#c', 'vvicat-testing#', '#x', 'vvicat testing#x', '', 42]) {
+    for (const bad of ['Example-skill#x', 'example-skill', 'a--b#c', 'example-skill#', '#x', 'example skill#x', '', 42]) {
       const v = validateEntry({ ...validFm, guard_ref: null, skill_ref: bad }, scopeValues)
       assert.ok(
         v.some((x) => /skill_ref/.test(x)),

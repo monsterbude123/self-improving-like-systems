@@ -27,7 +27,7 @@
  *
  * 行为契约（AC 全部 fixture 化 = tests/capture.test.mjs）：
  *   - 正向：事件行含 §2 Event 全键，fingerprint 稳定，按日分片
- *   - 双形态：宿主路径与 devbox 路径表达的同一错误 → 同一 fingerprint
+ *   - 双形态：宿主路径与容器内路径表达的同一错误 → 同一 fingerprint
  *   - 归并：同一 fingerprint 二次捕获 → 同一行 count+1（不新增行）
  *   - 近邻：相似但不同的错误 → 只写「待人工合并清单」绝不自动合并（首要键而非唯一真理）
  *   - 白名单：source 不在 config.event_sources → 拒收（exit 2）
@@ -71,7 +71,7 @@ function looksLikePath(token) {
 }
 
 /**
- * 路径归一化（宿主/devbox 双形态同 fingerprint 的关键）。
+ * 路径归一化（宿主/容器双形态同 fingerprint 的关键）。
  *
  * 规则（通用，零项目耦合）：先按已知前缀（`--path-prefix`，大小写与分隔符不敏感）剥根；
  * 剥不掉的（典型：宿主 `D:\...` 与容器 `/workspace/app/...` 的根无法预知）**只保留末两段**。
