@@ -209,12 +209,17 @@ function isDateLiteral(v) {
 /** 日期类键：源码级强制带引号形态。 */
 export const DATE_LITERAL_KEYS = ['date', 'resolved_date', 'last_verified_at']
 const QUOTED_DATE_LINE_RE = /^(date|resolved_date|last_verified_at):\s*(?:"(\d{4}-\d{2}-\d{2})"|'(\d{4}-\d{2}-\d{2})')\s*$/
-const DATE_KEY_LINE_RE = /^(date|resolved_date):/
 // last_verified_at 走**同一套**源码级判据，但 `null` 是它的合法缺省（schema.md §1.1：
 // 键必须存在，可空值写 null 占位）—— 它是全仓最常见的一行，误判成非法会让每个条目都红。
-const DATE_KEY_LINE_RE_NULLABLE = /^last_verified_at:/
-const QUOTED_ANY_LINE_RE = /^(date|resolved_date|last_verified_at):\s*["']/
 const NULL_VALUE_LINE_RE = /^last_verified_at:\s*null\s*$/
+// 拆「键: 值 + 尾随内容」。尾随内容的存在与否是**另一个**问题，混在一起就会漏判：
+//   date: "2026-10-18"          → 值形态对
+//   date: "2026-10-18"  # 注释   → 值形态对，但**行尾有东西** —— regex 后端取到的是
+//                               「"2026-10-18"  # 注释」这一段，引号位置不可信 ⇒ 判红
+//   date: "hello"                → 引号形态对，**值**不是日期 —— 这是值的问题，不是形态问题
+// 三者要报三种不同的错。把「加了引号」当成「形态没问题」会漏掉中间那类（2026-10-20 实测回归）。
+const DATE_LINE_RE = /^(date|resolved_date|last_verified_at):\s*(.*)$/
+const QUOTED_TOKEN_RE = /^("[^"]*"|'[^']*')(\s*)$/
 
 /**
  * 把解析后的值描述成人能对得上源码的形态。
@@ -244,10 +249,24 @@ function describeValue(v) {
  * @returns {string[]} 违规原因
  */
 export function checkDateLiteralSource(rawText) {
-  if (typeof rawText !== 'string') return []
+  return dateSourceFindings(rawText).reasons
+}
+
+/**
+ * 源码级判据的富返回：既要违规原因，也要知道**哪些键有形态问题**。
+ *
+ * 为什么要有第二个返回值：源码级判据与值判据会对同一个键各报一次（形态 + 值），
+ * 而值判据那一支在「裸日期被转成 Date」时报出的是**臆造值**。两处都报 ⇒ 读者先看到
+ * 源码级那条（准确），再看到值那条（不准确），注意力被后者拉走。
+ * 有了 shapeKeys，值判据就能对已报过形态的键闭嘴 —— 只在没有源码可查时（纯对象调用方）
+ * 才由它独家判红。
+ */
+function dateSourceFindings(rawText) {
+  if (typeof rawText !== 'string') return { reasons: [], shapeKeys: new Set() }
   const lines = rawText.replace(/^﻿/, '').replace(/\r\n/g, '\n').split('\n')
-  if (lines[0] !== '---') return []
+  if (lines[0] !== '---') return { reasons: [], shapeKeys: new Set() }
   const out = []
+  const shapeKeys = new Set()
   for (let i = 1; i < lines.length; i++) {
     if (lines[i] === '---') break
     const q = lines[i].match(QUOTED_DATE_LINE_RE)
@@ -256,17 +275,27 @@ export function checkDateLiteralSource(rawText) {
       if (!isValidDate(v)) out.push(`${q[1]} 非法: "${v}" 不是有效日历日期`)
       continue
     }
-    // 加了引号的行不在这里报：那不是形态问题（形态是对的），是**值**不对 ——
-    // 交给值判据报出真实值。两者混在一起会让人去查引号，而引号本来就写着。
-    const isQuoted = QUOTED_ANY_LINE_RE.test(lines[i])
-    const unquotedViolation =
-      (!isQuoted && DATE_KEY_LINE_RE.test(lines[i])) ||
-      (!isQuoted && DATE_KEY_LINE_RE_NULLABLE.test(lines[i]) && !NULL_VALUE_LINE_RE.test(lines[i]))
-    if (unquotedViolation) {
-      out.push(`${lines[i].split(':')[0]} 非法（源码形态）: ${lines[i].trim()} 须写成带引号的 "YYYY-MM-DD"（schema.md §1.4：两后端对未加引号日期的解法不同，只有源码判定能保证同色）`)
+    // 不是「恰好一个带引号的日期、且行尾干净」⇒ 形态问题。三种形态问题报同一句，
+    // 因为读者要做的动作是同一个：把这一行改成 `键: "YYYY-MM-DD"`（行尾不许有别的东西）。
+    const m = lines[i].match(DATE_LINE_RE)
+    if (!m) continue
+    const key = m[1]
+    const rest = m[2]
+    // last_verified_at 的 null 缺省合法（schema.md §1.1：键必须存在，可空值写 null 占位）
+    if (key === 'last_verified_at' && NULL_VALUE_LINE_RE.test(lines[i])) continue
+    // 形态问题的三种形态：
+    //   ① 值没加引号         → `date: 2026-10-18`
+    //   ② 引号后有尾随内容   → `date: "2026-10-18"  # 改号说明`（引号位置对 regex 后端不可信）
+    //   ③ 整行不是单个带引号的 token（值里带空格、引号不配对等）
+    // 而 `date: "hello"`（引号干净、值不是日期）是**值**问题，交给值判据报，不在这里报 ——
+    // 混在一起会让人去查引号，而引号本来就写着。
+    const token = rest.match(QUOTED_TOKEN_RE)
+    if (token === null) {
+      shapeKeys.add(key)
+      out.push(`${key} 非法（源码形态）: ${lines[i].trim()} 须写成带引号的 "YYYY-MM-DD"（schema.md §1.4：两后端对未加引号日期的解法不同，只有源码判定能保证同色）`)
     }
   }
-  return out
+  return { reasons: out, shapeKeys }
 }
 
 /** 单个可选键的类型违规原因；合规返回 null。 */
@@ -290,7 +319,9 @@ function checkOptionalEntryValue(key, v) {
     return null
   }
   if (kind === 'date') {
-    return isDateLiteral(v) ? null : `${key} 非法: ${JSON.stringify(v)}（须为带引号的 "YYYY-MM-DD" 字符串）`
+    // describeValue：裸日期被 YAML 后端转成 Date 时，JSON.stringify 会渲染成 ISO 串 ——
+    // 那个串在源文件里根本不存在，报出来只会让人查不到。
+    return isDateLiteral(v) ? null : `${key} 非法: ${describeValue(v)}（须为带引号的 "YYYY-MM-DD" 字符串）`
   }
   if (kind === 'string') {
     return typeof v === 'string' && v.trim() !== '' ? null : `${key} 非法: 须为非空字符串`
@@ -318,7 +349,9 @@ function checkOptionalEntryValue(key, v) {
 export function validateEntry(fm, scopeValues, rawText) {
   const out = []
   // 日期类键先走源码级判定（后端无关）；rawText 缺省时跳过（纯对象调用的消费方）。
-  out.push(...checkDateLiteralSource(rawText))
+  // srcFindings 同时带出「哪些键有形态问题」，供下面的值判据闭嘴用（见 dateSourceFindings 注释）。
+  const srcFindings = dateSourceFindings(rawText)
+  out.push(...srcFindings.reasons)
   for (const key of REQUIRED_ENTRY_KEYS) {
     if (!Object.prototype.hasOwnProperty.call(fm, key)) out.push(`缺必填字段: ${key}`)
   }
@@ -330,6 +363,10 @@ export function validateEntry(fm, scopeValues, rawText) {
   }
   for (const key of OPTIONAL_ENTRY_KEYS) {
     if (!(key in fm)) continue
+    // 形态问题已由源码级判据报过的键（date / resolved_date）：值判据闭嘴。
+    // 否则同一条事实报两遍，而第二遍报的是 YAML 解析期臆造出来的 ISO 值 ——
+    // 读者按它去源文件里查，什么都查不到。
+    if (srcFindings.shapeKeys.has(key)) continue
     const v = checkOptionalEntryValue(key, fm[key])
     if (v !== null) out.push(v)
   }
@@ -371,14 +408,14 @@ export function validateEntry(fm, scopeValues, rawText) {
     const shapeOk = !coerced && ISO_DATE_RE.test(v)
     const calOk = shapeOk && isValidDate(v)
     const hasRaw = typeof rawText === 'string'
-    // 有原文时，源码级判据（checkDateLiteralSource）已按**源码行**报过形态与日历两类问题 ——
-    // 那支报得更准（它看的是字面量，不是解析后的值）。这里再报一次是把同一条事实换个措辞
-    // 重复一遍，而重复的那次恰恰是臆造值（裸日期经 JSON.stringify 会渲染成 ISO 串，
-    // 与源文件里的字面量对不上）。两处都报 ⇒ 读者拿到的第一手信息被冲掉。
+    // 有原文时，源码级判据已按**源码行**报过形态与日历两类问题 —— 那支报得更准（它看的是
+    // 字面量，不是解析后的值）。这里再报一次是把同一条事实换个措辞重复一遍，而重复的那次
+    // 恰恰是臆造值（裸日期经 JSON.stringify 会渲染成 ISO 串，与源文件里的字面量对不上）。
+    // 两处都报 ⇒ 读者拿到的第一手信息被冲掉。
     // ⚠ 抑制**必须以 rawText 存在为前提**：纯对象调用方（门禁直接拿 fm、validate.test.mjs）
     //   根本没跑过源码级判据，此时这一支是唯一判据，抑制它 = 把非法判成合法。
     const reportedAtSource = hasRaw && shapeOk && !calOk
-    const reportedBySourceForm = hasRaw && coerced
+    const reportedBySourceForm = hasRaw && srcFindings.shapeKeys.has('last_verified_at')
     if (!reportedAtSource && !reportedBySourceForm && (coerced || !shapeOk || !calOk)) {
       out.push(`last_verified_at 非法: ${describeValue(v)}（须为 null 或带引号的 "YYYY-MM-DD"）`)
     }

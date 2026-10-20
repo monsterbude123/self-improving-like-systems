@@ -678,4 +678,32 @@ describe('validateEntry 纯函数（供门禁/注册等消费方复用，不重�
     const { fm } = extractFrontmatter(raw)
     assert.deepEqual(validateEntry(fm, scopeValues, raw), [], 'null 是合法占位（schema.md §1.1），误伤会让每个条目都红')
   })
+
+  it('日期行尾有尾随内容（行内注释）必须判红 —— 引号位置对 regex 后端不可信', () => {
+    // 这条是 2026-10-20 修判据时**引入又修掉**的一个回归：一度把「加了引号的行」一律
+    // 当成形态没问题，于是 `date: "2026-10-18"  # 改号说明` 这种形态反而放过了。
+    // 值形态对 ≠ 行形态对：regex 后端取到的是引号之间的内容还是整行，取决于尾随内容在不在。
+    const raw = [
+      '---', 'type: ERR', 'status: resolved', 'scope: infra', 'claim: x',
+      'guard_ref: null', 'recurrence: 0', 'last_verified_at: null',
+      'date: "2026-10-18"  # ID 于 2026-10-19 改号', '---', '',
+    ].join('\n')
+    const { fm } = extractFrontmatter(raw)
+    const reasons = validateEntry(fm, scopeValues, raw)
+    assert.ok(reasons.some((r) => r.includes('date 非法')), `行尾有内容必须判红，实际 ${JSON.stringify(reasons)}`)
+    assert.ok(reasons.some((r) => r.includes('源码形态')), `须报为形态问题（不是值问题）: ${JSON.stringify(reasons)}`)
+  })
+
+  it('裸日期只报一次，且报的是源码行不是 YAML 解析期的臆造值', () => {
+    const raw = [
+      '---', 'type: ERR', 'status: resolved', 'scope: infra', 'claim: x',
+      'guard_ref: null', 'recurrence: 0', 'last_verified_at: null',
+      'date: 2026-10-18', '---', '',
+    ].join('\n')
+    const { fm } = extractFrontmatter(raw)
+    const reasons = validateEntry(fm, scopeValues, raw)
+    const dateReasons = reasons.filter((r) => r.startsWith('date 非法'))
+    assert.equal(dateReasons.length, 1, `同一条事实报两遍会冲掉第一手信息: ${JSON.stringify(dateReasons)}`)
+    assert.ok(!dateReasons[0].includes('T00:00:00'), `不得出现源文件里不存在的 ISO 形态: ${dateReasons[0]}`)
+  })
 })
