@@ -207,9 +207,29 @@ function isDateLiteral(v) {
 }
 
 /** 日期类键：源码级强制带引号形态。 */
-export const DATE_LITERAL_KEYS = ['date', 'resolved_date']
-const QUOTED_DATE_LINE_RE = /^(date|resolved_date):\s*(?:"(\d{4}-\d{2}-\d{2})"|'(\d{4}-\d{2}-\d{2})')\s*$/
+export const DATE_LITERAL_KEYS = ['date', 'resolved_date', 'last_verified_at']
+const QUOTED_DATE_LINE_RE = /^(date|resolved_date|last_verified_at):\s*(?:"(\d{4}-\d{2}-\d{2})"|'(\d{4}-\d{2}-\d{2})')\s*$/
 const DATE_KEY_LINE_RE = /^(date|resolved_date):/
+// last_verified_at 走**同一套**源码级判据，但 `null` 是它的合法缺省（schema.md §1.1：
+// 键必须存在，可空值写 null 占位）—— 它是全仓最常见的一行，误判成非法会让每个条目都红。
+const DATE_KEY_LINE_RE_NULLABLE = /^last_verified_at:/
+const QUOTED_ANY_LINE_RE = /^(date|resolved_date|last_verified_at):\s*["']/
+const NULL_VALUE_LINE_RE = /^last_verified_at:\s*null\s*$/
+
+/**
+ * 把解析后的值描述成人能对得上源码的形态。
+ *
+ * 存在的理由（2026-10-20 实测）：yaml-lite 把未加引号的 `2026-10-18` 强制转成 **Date 对象**，
+ * 而 `JSON.stringify(new Date(...))` 渲染成 `"2026-10-18T00:00:00.000Z"` —— 于是校验器
+ * 报出了一个**文件里根本不存在的值**。照着它去源文件里 grep `T00:00:00.000Z` 什么也找不到，
+ * 只会得出「校验器在瞎报」的结论，而真正的错（少了一对引号）就藏在眼前。
+ */
+function describeValue(v) {
+  if (v instanceof Date) {
+    return `${JSON.stringify(v)} ⚠ 这是 YAML 解析期把裸日期转成的 Date，源文件里写的不是这个形态`
+  }
+  return JSON.stringify(v)
+}
 
 /**
  * 日期类键的**源码级**判据：必须写成带引号的 `"YYYY-MM-DD"`。
@@ -236,7 +256,13 @@ export function checkDateLiteralSource(rawText) {
       if (!isValidDate(v)) out.push(`${q[1]} 非法: "${v}" 不是有效日历日期`)
       continue
     }
-    if (DATE_KEY_LINE_RE.test(lines[i])) {
+    // 加了引号的行不在这里报：那不是形态问题（形态是对的），是**值**不对 ——
+    // 交给值判据报出真实值。两者混在一起会让人去查引号，而引号本来就写着。
+    const isQuoted = QUOTED_ANY_LINE_RE.test(lines[i])
+    const unquotedViolation =
+      (!isQuoted && DATE_KEY_LINE_RE.test(lines[i])) ||
+      (!isQuoted && DATE_KEY_LINE_RE_NULLABLE.test(lines[i]) && !NULL_VALUE_LINE_RE.test(lines[i]))
+    if (unquotedViolation) {
       out.push(`${lines[i].split(':')[0]} 非法（源码形态）: ${lines[i].trim()} 须写成带引号的 "YYYY-MM-DD"（schema.md §1.4：两后端对未加引号日期的解法不同，只有源码判定能保证同色）`)
     }
   }
@@ -334,12 +360,28 @@ export function validateEntry(fm, scopeValues, rawText) {
   if ('recurrence' in fm && (!Number.isInteger(fm.recurrence) || fm.recurrence < 0)) {
     out.push(`recurrence 非法: ${JSON.stringify(fm.recurrence)}（须为 ≥0 的整数）`)
   }
-  if (
-    'last_verified_at' in fm &&
-    fm.last_verified_at !== null &&
-    (typeof fm.last_verified_at !== 'string' || !ISO_DATE_RE.test(fm.last_verified_at) || !isValidDate(fm.last_verified_at))
-  ) {
-    out.push(`last_verified_at 非法: ${JSON.stringify(fm.last_verified_at)}（须为 null 或 YYYY-MM-DD）`)
+  if ('last_verified_at' in fm && fm.last_verified_at !== null) {
+    const v = fm.last_verified_at
+    // 三种非法各自独立成立，不能互相替代（ISO_DATE_RE 只管形状不管日历，
+    // 「形状对但 2026-13-45 不存在」是最容易被漏掉的一种）：
+    //   coerced  = 非字符串 —— 裸日期被 YAML 后端转成了 Date/时间戳
+    //   !shapeOk = 形状不对 —— 不是 YYYY-MM-DD
+    //   !calOk   = 日历日不存在 —— 形状对但没有这一天
+    const coerced = typeof v !== 'string'
+    const shapeOk = !coerced && ISO_DATE_RE.test(v)
+    const calOk = shapeOk && isValidDate(v)
+    const hasRaw = typeof rawText === 'string'
+    // 有原文时，源码级判据（checkDateLiteralSource）已按**源码行**报过形态与日历两类问题 ——
+    // 那支报得更准（它看的是字面量，不是解析后的值）。这里再报一次是把同一条事实换个措辞
+    // 重复一遍，而重复的那次恰恰是臆造值（裸日期经 JSON.stringify 会渲染成 ISO 串，
+    // 与源文件里的字面量对不上）。两处都报 ⇒ 读者拿到的第一手信息被冲掉。
+    // ⚠ 抑制**必须以 rawText 存在为前提**：纯对象调用方（门禁直接拿 fm、validate.test.mjs）
+    //   根本没跑过源码级判据，此时这一支是唯一判据，抑制它 = 把非法判成合法。
+    const reportedAtSource = hasRaw && shapeOk && !calOk
+    const reportedBySourceForm = hasRaw && coerced
+    if (!reportedAtSource && !reportedBySourceForm && (coerced || !shapeOk || !calOk)) {
+      out.push(`last_verified_at 非法: ${describeValue(v)}（须为 null 或带引号的 "YYYY-MM-DD"）`)
+    }
   }
   return out
 }

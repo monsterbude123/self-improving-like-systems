@@ -23,6 +23,7 @@ import {
   OPTIONAL_ENTRY_KEYS,
   OPTIONAL_ENTRY_KEY_TYPES,
   PROTOCOL_CONFIG_VERSION,
+  extractFrontmatter,
   resolveConfigPath,
   validateConfig,
   validateCoveredEntries,
@@ -636,5 +637,45 @@ describe('validateEntry 纯函数（供门禁/注册等消费方复用，不重�
       ),
     )
     assert.ok(validateEntry({ ...validFm, claim: '  ' }, scopeValues).some((v) => v.includes('claim 非法')))
+  })
+
+  /**
+   * 报错必须指向**源文件里真实存在的形态**（2026-10-20 修的真缺陷）。
+   *
+   * 缺陷本体：yaml-lite 把未加引号的 `2026-10-18` 强制转成 Date 对象，
+   * `JSON.stringify(Date)` 渲染成 `"2026-10-18T00:00:00.000Z"` —— 校验器于是报出了一个
+   * **文件里根本不存在的值**。照着它去源文件 grep `T00:00:00.000Z` 什么也找不到，
+   * 读者只能得出「校验器在瞎报」，而真正的错（少一对引号）就写在报错同一行里。
+   *
+   * 这条用例的意义不在「判红」（改前也判红），在**判红理由必须可据以定位**。
+   */
+  it('裸日期的报错指向源码字面量，不得报出 YAML 解析期臆造出来的 ISO 值', () => {
+    const raw = [
+      '---', 'type: ERR', 'status: resolved', 'scope: infra', 'claim: x',
+      'guard_ref: null', 'recurrence: 0', 'last_verified_at: 2026-10-18', '---', '',
+    ].join('\n')
+    const { fm } = extractFrontmatter(raw)
+    const reasons = validateEntry(fm, scopeValues, raw)
+    assert.equal(reasons.length, 1, `应恰好一条（形态问题），实际 ${JSON.stringify(reasons)}`)
+    assert.ok(reasons[0].includes('2026-10-18'), `报错须含源码里的字面量：${reasons[0]}`)
+    assert.ok(!reasons[0].includes('T00:00:00'), `报错不得出现源文件里不存在的 ISO 形态：${reasons[0]}`)
+  })
+
+  it('无原文路径也不得把 Date 渲染成裸 ISO 冒充成文件内容', () => {
+    // 纯对象调用方（门禁直接拿 fm）拿不到源码，唯一的线索就是这个值本身。
+    // 这时必须说清「这是解析期转出来的」，而不是让人照着一个查不到的值去搜。
+    const fmCoerced = { ...validFm, last_verified_at: new Date('2026-10-18') }
+    const reasons = validateEntry(fmCoerced, scopeValues)
+    assert.equal(reasons.length, 1, `非字符串必须是非法：${JSON.stringify(reasons)}`)
+    assert.ok(reasons[0].includes('解析期'), `须点明值来自 YAML 解析期而非源文件：${reasons[0]}`)
+  })
+
+  it('last_verified_at 的 null 缺省不得被源码级判据误伤（全仓最常见的一行）', () => {
+    const raw = [
+      '---', 'type: ERR', 'status: resolved', 'scope: infra', 'claim: x',
+      'guard_ref: null', 'recurrence: 0', 'last_verified_at: null', '---', '',
+    ].join('\n')
+    const { fm } = extractFrontmatter(raw)
+    assert.deepEqual(validateEntry(fm, scopeValues, raw), [], 'null 是合法占位（schema.md §1.1），误伤会让每个条目都红')
   })
 })
