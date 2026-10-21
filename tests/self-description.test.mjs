@@ -72,6 +72,14 @@ const FACTS = [
     mutate: (s) => s.replace(/零项目耦合/g, '通用性要求'),
   },
   {
+    id: 'onboard-one-command',
+    label: '接入一个项目的标准动作 = 一条命令',
+    re: /self-improving-like-systems\s+install\s+--project-dir/,
+    // 破坏：把那条一键接入命令改掉 —— 于是后来的 agent 以为「接入 = 手工若干步」，
+    // 就会去教人手工做（那份清单会随时间漂移，且没人再维护它）
+    mutate: (s) => s.replace(/npx self-improving-like-systems install --project-dir \./, '（删掉的一键接入命令）'),
+  },
+  {
     id: 'release-flow',
     label: '发版流程（含发布前的一致性断言）',
     // 认它：发布动作与「tag 与 version 必须一致」的断言**都在**（顺序无关 ——
@@ -96,7 +104,7 @@ describe('协议仓自描述：AGENTS.md 的关键事实不许消失', () => {
     assert.ok(existsSync(AGENTS), `协议仓根缺 AGENTS.md：${AGENTS}`)
   })
 
-  it('五条关键事实齐全（判据入口 / GitHub 地址 / npm 包名 / 零耦合禁令 / 发版流程）', () => {
+  it('关键事实齐全（判据入口 / GitHub 地址 / npm 包名 / 零耦合禁令 / 一键接入 / 发版流程）', () => {
     const content = readFileSync(AGENTS, 'utf8')
     const missing = missingFacts(content)
     assert.equal(missing.length, 0,

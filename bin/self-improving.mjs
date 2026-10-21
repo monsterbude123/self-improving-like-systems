@@ -35,6 +35,8 @@ const COMMANDS = {
   'self-test': { script: 'run-tests.mjs', desc: '跑全套判据（唯一入口，cwd 无关）' },
   'test': { script: 'run-tests.mjs', desc: '同 self-test' },
   init: { script: 'init.mjs', desc: '给项目铺一份最小可用实例（--project-dir <目录> [--apply]）' },
+  install: { script: 'install-project.mjs', desc: '**一条命令接入本项目**（配置+薄壳+指针+钩子+gitignore+清单）' },
+  'collect-logs': { script: 'collect-logs.mjs', desc: '把运行期日志采到用户目录，供维护 agent 分析' },
   doctor: { script: 'hook-install.mjs', desc: '接线体检（--project-dir <目录>）', prepend: ['--doctor'] },
   'hook-install': { script: 'hook-install.mjs', desc: '接线片段 / 体检 / 落盘（--apply）' },
   validate: { script: 'validate.mjs', desc: '校验条目 / 配置 / 注册表（<file...> 或 --all）' },
@@ -61,7 +63,8 @@ ${Object.entries(COMMANDS).map(([k, v]) => `  ${k.padEnd(14)}${v.desc}`).join('\
 
 常用：
   npx self-improving-like-systems self-test
-  npx self-improving-like-systems init --project-dir . --apply
+  npx self-improving-like-systems install --project-dir . --apply
+  npx self-improving-like-systems collect-logs --project-dir . --apply
 
 说明：
   · 协议层本体在 GitHub：https://github.com/monsterbude123/self-improving-like-systems

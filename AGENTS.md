@@ -53,13 +53,30 @@ node scripts/run-tests.mjs
 | `references/stoploss.md` | 止损冻结 / 恢复程序 | 本仓 |
 | `references/hook-wiring*.json` | 接线片段的权威形态 | 本仓 |
 | `scripts/validate.mjs` | 校验器 CLI（条目 / 配置 / 注册表 / 绑定） | 本仓 |
-| `scripts/init.mjs` | 接入脚手架（派生实例配置 + 落实目录分层） | 本仓 |
+| `scripts/init.mjs` | 接入脚手架（派生实例配置 + 落实目录分层 + 落项目侧薄壳） | 本仓 |
+| `scripts/install-project.mjs` | **一条命令接入一个项目**（配置 + 薄壳 + 指针 + 钩子 + gitignore + 清单） | 本仓 |
+| `scripts/lib/layer-resolve.mjs` / `scripts/lib/layer-gate.mjs` | 层在哪 / 层装没装好 / 指针写没写全两条通道 —— 单一权威 | 本仓 |
+| `scripts/project-side/self-improving.mjs` | 项目侧薄壳模板（复制进项目：doctor / install / self-test / gate / collect-logs） | 本仓 |
+| `scripts/collect-logs.mjs` | 把项目运行期信号采到用户目录，供本仓的维护 agent 分析升级 | 本仓 |
 | `scripts/run-tests.mjs` | 全套判据的唯一入口 | 本仓 |
 | `scripts/*.mjs` | 注入 / 捕获 / 蒸馏 / 批准 / 守卫派发 / 生命周期收口 / 运维对账 / 接线体检 | 本仓 |
 | `tests/` | `node:test` 套件（含破坏测试与可移植性守卫） | 本仓 |
 
 **协议正文只在这里。** 接入项目的文档只允许写**一行指针**（仓地址 + 怎么装），
 不复述协议 —— 复述即第二份事实源，日后必然漂移。
+
+**接入一个项目的标准动作 = 一条命令**（2026-10-21 立）：
+
+```bash
+npx self-improving-like-systems install --project-dir . --apply
+```
+
+它一次做完实例配置、项目侧薄壳、指针、宿主钩子接线、运行期目录进 `.gitignore`、清单里的 npm 脚本。
+**装得上 ≠ 接得上，接上 ≠ 接对** —— 所以「接入」必须是**一条命令**，
+而不是「人记得住的几步」（实测此前要手工 7 步，且 `init` 会把本机绝对路径写进新项目的清单）。
+接入项目侧只留薄壳：`scripts/self-improving.mjs` 是入口与「层可用性感知」的载体，
+**协议层对项目只读**，项目侧只管产生信号、由本仓的维护 agent 消费信号
+（`collect-logs` 采到 `~/.agents/self-improving-like-systems/collect/<项目>/`）。
 
 ## 4. 两条分发通道（同一份内容）
 

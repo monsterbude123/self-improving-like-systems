@@ -40,6 +40,8 @@ const INIT = path.join(SKILL_ROOT, 'scripts', 'init.mjs')
 const RUN_TESTS = path.join(SKILL_ROOT, 'scripts', 'run-tests.mjs')
 const CONFIG_PATH = '.self-improving.yaml'
 const REGISTRY_PATH = `${TRACKED_ROOT}/registry.yaml`
+/** 项目侧薄壳（2026-10-21 起 init 一并落：没有它，宿主钩子就没有入口）。 */
+const SHELL_PATH = 'scripts/self-improving.mjs'
 
 /** 递归列出目录下所有文件（相对、正斜杠），用于「零写盘」与「不多生目录」断言。 */
 function fileList(dir) {
@@ -93,21 +95,21 @@ test('演练态已存在的文件列为「保持不动」，不谎报为将要�
   writeFileSync(path.join(dir, CONFIG_PATH), 'version: 1\n', 'utf8')
   const r = runCLI(['--project-dir', dir])
   assert.match(r.stdout, /已存在，保持不动/)
-  assert.match(r.stdout, /将[要]落 1 个文件/)
+  assert.match(r.stdout, /将[要]落 2 个文件/)
 })
 
 // ── --apply：只增缺失 ────────────────────────────────────────────────────────
 
-test('--apply 落两个文件且目录里不多不少', () => {
+test('--apply 落三个文件且目录里不多不少（配置 / 注册表 / 项目侧薄壳）', () => {
   const dir = newProject()
   const r = runCLI(['--project-dir', dir, '--apply'])
   assert.equal(r.status, 0, r.stderr)
-  assert.deepEqual(fileList(dir), [CONFIG_PATH, REGISTRY_PATH].sort())
+  assert.deepEqual(fileList(dir), [CONFIG_PATH, REGISTRY_PATH, SHELL_PATH].sort())
 })
 
 test('--apply 二次运行不覆盖已存在的文件（逐字节不变）', () => {
   const dir = newProject()
-  assert.equal(applyInit(dir).written.length, 2)
+  assert.equal(applyInit(dir).written.length, 3)
 
   // 人手改过的配置：改了 scope.default（正常该改的地方）
   const edited = readFileSync(path.join(dir, CONFIG_PATH), 'utf8').replace(
@@ -118,7 +120,7 @@ test('--apply 二次运行不覆盖已存在的文件（逐字节不变）', () 
 
   const { written, skipped } = applyInit(dir)
   assert.deepEqual(written, [], '二次运行覆盖了已存在的文件')
-  assert.deepEqual(skipped.sort(), [CONFIG_PATH, REGISTRY_PATH].sort())
+  assert.deepEqual(skipped.sort(), [CONFIG_PATH, REGISTRY_PATH, SHELL_PATH].sort())
   assert.equal(readFileSync(path.join(dir, CONFIG_PATH), 'utf8'), edited, '人改过的内容被吃掉了')
 })
 
@@ -129,7 +131,7 @@ test('--apply 只补缺的那一个，不连带重写另一个', () => {
   const original = readFileSync(path.join(dir, REGISTRY_PATH), 'utf8')
   const { written, skipped } = applyInit(dir)
   assert.deepEqual(written, [CONFIG_PATH])
-  assert.deepEqual(skipped, [REGISTRY_PATH])
+  assert.deepEqual(skipped.sort(), [REGISTRY_PATH, SHELL_PATH].sort())
   assert.equal(readFileSync(path.join(dir, REGISTRY_PATH), 'utf8'), original)
 })
 
@@ -221,15 +223,19 @@ test('不修改 .git/info/exclude（只提示，不代改）', () => {
   assert.match(r.stdout, /只提示，不代改/)
 })
 
-test('不在条目区之外生成任何目录', () => {
+test('不在条目区之外铺目录树（只多一个装薄壳的 scripts/，且里面只有一个文件）', () => {
   const dir = newProject()
   applyInit(dir)
   assert.deepEqual(
     readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort(),
-    [TRACKED_ROOT],
+    [TRACKED_ROOT, 'scripts'].sort(),
     'init 建了条目区之外的目录 —— 接入一个技能不该在业务仓里铺自己的目录树',
   )
-  // 且条目区自身此刻是空的：不让空目录进 git（git 不跟踪空目录，建了也是噪声）
+  // scripts/ 里**只有一个**薄壳文件：它是「层在哪 / 怎么用 / 怎么判装没装好」的入口，
+  // 不是判据副本（判据副本 = 两份事实源，见 onboarding 的「环节 4b」）。
+  // 目录里多出任何东西都算违规 —— 接入不该在业务仓里留自己的杂物。
+  assert.deepEqual(readdirSync(path.join(dir, 'scripts')), ['self-improving.mjs'])
+  // 且条目区自身此刻只有注册表：不让空目录进 git（git 不跟踪空目录，建了也是噪声）
   assert.deepEqual(readdirSync(path.join(dir, TRACKED_ROOT)), ['registry.yaml'])
 })
 
@@ -309,7 +315,7 @@ test('--project-dir 缺值时退出 2（不把下一个 flag 当目录吞掉）'
 test('main() 可被直接调用并返回退出码（CLI 入口约定）', () => {
   const dir = newProject()
   assert.equal(main(['--project-dir', dir, '--apply']), 0)
-  assert.deepEqual(fileList(dir), [CONFIG_PATH, REGISTRY_PATH].sort())
+  assert.deepEqual(fileList(dir), [CONFIG_PATH, REGISTRY_PATH, SHELL_PATH].sort())
 })
 
 // ── 破坏测试自检：证明上面的判据不是恒真 ─────────────────────────────────────
@@ -442,11 +448,13 @@ test('planInit 对已存在的项标 exists（供调用方决定「写还是跳�
   assert.deepEqual(planInit(dir).map((p) => [p.path, p.exists]), [
     [CONFIG_PATH, false],
     [REGISTRY_PATH, false],
+    [SHELL_PATH, false],
   ])
   applyInit(dir)
   assert.deepEqual(planInit(dir).map((p) => [p.path, p.exists]), [
     [CONFIG_PATH, true],
     [REGISTRY_PATH, true],
+    [SHELL_PATH, true],
   ])
 })
 

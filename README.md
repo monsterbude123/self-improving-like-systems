@@ -134,20 +134,53 @@ node ~/.agents/skills/self-improving-like-systems/scripts/run-tests.mjs
 
 ## 接一个项目
 
+**一条命令**（2026-10-21 起；此前要手工 7 步，装得上 ≠ 接得上）：
+
 ```bash
-node <协议层>/scripts/init.mjs --project-dir <项目目录>          # 先看它打算落什么，零写盘
-node <协议层>/scripts/init.mjs --project-dir <项目目录> --apply   # 确认后再落
+npx self-improving-like-systems install --project-dir .          # 先看它打算落什么，零写盘
+npx self-improving-like-systems install --project-dir . --apply  # 确认后再落
 ```
 
-它落两份文件（仓根 `.self-improving.yaml` + `.self-improving/registry.yaml`），
-已存在的文件一律不动，所以可以放心重复跑。落完还剩三件要人做：
+它一次做完：
 
-1. 把 `.self-improving-work/` 加进 `.gitignore` 或 `.git/info/exclude`
-   —— 运行时数据都在这里，漏了的话每次跑完 `git status` 就不干净
-2. 填 `scope.values`（文件里有 TODO 标记；不填也能跑，fail-safe 桶永不自动注入）
-3. 接线体检：`node <协议层>/scripts/hook-install.mjs --doctor --project-dir <项目目录>`
+| 落什么 | 去哪 | 为什么 |
+|---|---|---|
+| 实例配置 + 注册表 | `.self-improving.yaml`、`.self-improving/registry.yaml` | 协议形状的单一权威 |
+| **项目侧薄壳** | `scripts/self-improving.mjs` | 宿主钩子的入口 + 项目侧「层可用性感知」的载体 |
+| **指针** | `.agents/skills/self-improving/SKILL.md` | 别的 agent 检索「经验系统」时**唯一会读到**的地方 |
+| **宿主钩子接线** | `.zcode/config.json` | 5 个事件（SessionStart / PostToolUse / PostToolUseFailure / UserPromptSubmit / Stop） |
+| 运行期目录 | `.gitignore` | 漏了的话每次跑完 `git status` 就不干净 |
+| npm 脚本 | `package.json` | `si:doctor` / `si:install` / `si:gate` / `si:self-test` |
 
-最后逐条打开 `kill_switch` —— **开关必须先于它防的风险存在**。
+已存在的文件**一律不动**（人改过的 scope、路径、清单脚本原样保留），所以可以放心重复跑。
+清单文件只在「JSON 往返不变形」时才改 —— 重排格式会制造整份清单的噪音，那种 diff 会让人开始绕开这个工具。
+
+落完还剩两件要人做：
+
+1. 填 `scope.values`（文件里有 TODO 标记；不填也能跑，fail-safe 桶永不自动注入）
+2. 逐条打开 `kill_switch` —— **开关必须先于它防的风险存在**
+
+### 接入后项目侧怎么用
+
+```bash
+npm run si:doctor      # 层装没装好？层没装时它给**可操作的安装提示**，不让人猜
+npm run si:self-test   # 跑协议层全套判据
+npm run si:gate        # 门禁（可挂 pre-commit）
+```
+
+钩子接线写的是 `node "${ZCODE_PROJECT_DIR}/scripts/self-improving.mjs" <子命令>` ——
+配置里**只有项目相对路径**（可移植、不含任何机器盘符），运行期由薄壳去层里找真脚本
+（正确：层装在 clone 通道还是 npm 通道、挪了位置，都照样跑）。
+
+### 分层：项目只读协议层
+
+- **协议层对项目是只读的**：层目录不被项目写任何东西（实测：跑完 init / 接线 / 捕获，已装层仍是 clean）。
+- **项目侧只留薄壳**：`scripts/self-improving.mjs` 是入口，协议正文与判据都在仓外的层里 ——
+  仓内留副本等于两份事实源（改了一份忘了另一份，门禁判的和提交里跑的就悄悄分叉）。
+- **项目侧只管产生信号，协议层的维护 agent 负责消费信号**：
+  `npx self-improving-like-systems collect-logs --project-dir . --apply`
+  把运行期事件 / 审计 / 守卫态采到 `~/.agents/self-improving-like-systems/collect/<项目>/`，
+  维护 agent 在那里读，用于协议层自己的规则与技能升级。只采运行期数据，**不采条目正文**。
 
 ## 目录
 
@@ -158,7 +191,11 @@ node <协议层>/scripts/init.mjs --project-dir <项目目录> --apply   # 确�
 | `references/stoploss.md` | 止损冻结 / 恢复程序 |
 | `references/hook-wiring*.json` | 接线片段的权威形态（`<SKILL_DIR>` 占位符） |
 | `scripts/validate.mjs` | 校验器 CLI（条目 / 配置 / 注册表 / 绑定） |
-| `scripts/init.mjs` | 接入脚手架：派生实例配置 + 落实目录分层 |
+| `scripts/init.mjs` | 接入脚手架：派生实例配置 + 落实目录分层 + 落项目侧薄壳 |
+| `scripts/install-project.mjs` | **一条命令接入一个项目**（配置 + 薄壳 + 指针 + 钩子 + gitignore + 清单） |
+| `scripts/lib/layer-resolve.mjs` / `layer-gate.mjs` | 层在哪 / 层装没装好 / 指针写没写全两条通道 —— 单一权威 |
+| `scripts/project-side/self-improving.mjs` | 项目侧薄壳模板（复制进项目：doctor / install / self-test / gate / collect-logs） |
+| `scripts/collect-logs.mjs` | 把项目运行期信号采到用户目录，供协议层维护 agent 分析 |
 | `scripts/run-tests.mjs` | 全套判据的唯一入口（cwd 无关；找不到 `tests/` 即 exit 2） |
 | `scripts/*.mjs` | 注入、捕获、蒸馏、批准、守卫派发、生命周期收口、运维对账、接线体检 |
 | `tests/` | `node:test` 套件，含破坏测试与可移植性守卫 |

@@ -25,6 +25,11 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 export const PROTOCOL_ROOT = path.resolve(HERE, '..')
 const CONFIG_TEMPLATE = path.join(HERE, 'config.example.yaml')
 const REGISTRY_TEMPLATE = path.join(HERE, 'registry.example.yaml')
+/** 项目侧薄壳模板 —— 一字不改地复制进项目（它是「层在哪 / 怎么跑 / 怎么判装没装好」的入口）。 */
+const SHELL_TEMPLATE = path.join(HERE, 'project-side', 'self-improving.mjs')
+
+/** 项目侧薄壳在项目里的相对位置。 */
+export const SHELL_REL = 'scripts/self-improving.mjs'
 
 /**
  * 接入后的目录分工（与本技能在真实项目上验证过的布局同构）：
@@ -185,6 +190,12 @@ export function planInit(projectDir) {
   }
   push('.self-improving.yaml', 'config', renderConfigFromTemplate())
   push(path.join(TRACKED_ROOT, 'registry.yaml'), 'registry', renderRegistry())
+  // 项目侧薄壳：没有它，宿主钩子就没有入口（接线片段指向它），项目也不知道「层怎么用」。
+  // 2026-10-21 补：此前薄壳由接入项目各写一份 → 每个项目都手抄一遍「层在哪、怎么更新」。
+  if (!existsSync(SHELL_TEMPLATE)) {
+    throw new Error(`项目侧薄壳模板缺失：${SHELL_TEMPLATE} —— 协议层不完整，重装后再试`)
+  }
+  push(SHELL_REL, 'shell', readFileSync(SHELL_TEMPLATE, 'utf8'))
   return items
 }
 

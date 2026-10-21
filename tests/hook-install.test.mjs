@@ -9,7 +9,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { doctorConfig, resolveSkillScriptsDir } from '../scripts/hook-install.mjs'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -135,31 +135,65 @@ test('脚本不存在 → 报出（无模板变量时才判）', () => {
   assert.ok(has(doctorConfig(cfg, SCRIPTS).problems, /不存在/))
 })
 
-test('脚本路径含模板变量 → 解析后的协议层目录里确有该脚本时**不**报「不存在」', () => {
-  // 口径已升级（2026-10-19）：此前是「带 ${} 一律不判」，理由是静态拼不出真实路径。
-  // 现在 resolveSkillScriptsDir 能解析出协议层目录，而**技能相对形态**的脚本名是确定的，
-  // 所以这一类从「不判」升级为「按解析到的真实目录核对」。
-  // 本例正是「确有该脚本 ⇒ 不得误报」的那一极 —— 误报防线没有被削弱。
-  const cfg = baseConfig()
-  cfg.hooks.events.PostToolUseFailure[0].hooks[0].command =
-    'node "${ZCODE_PROJECT_DIR}/.agents/skills/self-improving-like-systems/scripts/capture.mjs" --text -'
-  const { problems } = doctorConfig(cfg, SCRIPTS)
-  assert.ok(!has(problems, /不存在/), '解析后确实存在时不得误报：' + problems.join(' | '))
+test('项目相对脚本路径 → 按**项目根**核对：存在时不得误报（误报防线没被削弱）', () => {
+  // 口径再升级（2026-10-21）：`${ZCODE_PROJECT_DIR}/<相对路径>` 运行期展开后就是
+  // 项目里的那个路径 —— 它存在与否**完全可静态判定**，所以必须按项目根核对。
+  // 本例是「确有该脚本 ⇒ 不得误报」的那一极。
+  const root = mkdtempSync(path.join(tmpdir(), 'si-hookroot-'))
+  try {
+    mkdirSync(path.join(root, 'tools'), { recursive: true })
+    writeFileSync(path.join(root, 'tools', 'whatever.mjs'), '// stub', 'utf8')
+    const cfg = baseConfig()
+    cfg.hooks.events.PostToolUseFailure[0].hooks[0].command = 'node "${ZCODE_PROJECT_DIR}/tools/whatever.mjs"'
+    const { problems } = doctorConfig(cfg, SCRIPTS, root)
+    assert.ok(!has(problems, /不存在|必然失败/), '项目里确实存在时不得误报：' + problems.join(' | '))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
-test('破坏测试：同一形态但脚本不存在 → 必须报「钩子必然失败」（守卫不得恒绿）', () => {
-  const cfg = baseConfig()
-  cfg.hooks.events.PostToolUseFailure[0].hooks[0].command =
-    'node "${ZCODE_PROJECT_DIR}/.agents/skills/self-improving-like-systems/scripts/no-such-script.mjs" --text -'
-  const { problems } = doctorConfig(cfg, SCRIPTS)
-  assert.ok(has(problems, /必然失败|没有它/), '协议层目录下没有该脚本时必须报出：' + problems.join(' | '))
+test('破坏测试：项目相对脚本路径在项目里**不存在** → 必须报「钩子必然失败」（守卫不得恒绿）', () => {
+  // 这一条就是 2026-10-21 实测到的静默失效的守卫版：
+  // 层迁出仓外、配置还指着项目内那份已删的副本 —— 旧口径只核对脚本名，**体检全绿、钩子每次失败**。
+  const root = mkdtempSync(path.join(tmpdir(), 'si-hookroot-'))
+  try {
+    const cfg = baseConfig()
+    cfg.hooks.events.PostToolUseFailure[0].hooks[0].command =
+      'node "${ZCODE_PROJECT_DIR}/.agents/skills/self-improving-like-systems/scripts/capture.mjs" --text -'
+    const { problems } = doctorConfig(cfg, SCRIPTS, root)
+    assert.ok(has(problems, /必然失败/), '项目里没有该脚本时必须报出（旧口径会漏判这一条）：' + problems.join(' | '))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
-test('非技能相对形态的模板变量路径仍不判存在性（误报防线未被扩大）', () => {
+test('破坏测试：脚本存在但项目相对形态解析到另一处 → 不得拿层目录里的同名文件顶替', () => {
+  // 旧口径的致命处：命令指向项目内某路径，它不存在，但层目录里有同名脚本 → 判绿。
+  // 正确口径：命令写的就是那个路径，那个路径不在 → 钩子必然失败。
+  const root = mkdtempSync(path.join(tmpdir(), 'si-hookroot-'))
+  try {
+    const cfg = baseConfig()
+    cfg.hooks.events.PostToolUseFailure[0].hooks[0].command =
+      'node "${ZCODE_PROJECT_DIR}/.agents/skills/self-improving-like-systems/scripts/capture.mjs" --text -'
+    // 层目录里确实有 capture.mjs —— 正是旧口径误判为「存在」的那份
+    assert.ok(existsSync(path.join(SCRIPTS, 'capture.mjs')), '前提：层目录里确实有同名脚本')
+    const { problems } = doctorConfig(cfg, SCRIPTS, root)
+    assert.ok(has(problems, /必然失败/), '不得用层目录的同名文件替命令里的路径顶缸：' + problems.join(' | '))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('绝对路径脚本 → 按该绝对路径核对（不存在即必然失败）', () => {
   const cfg = baseConfig()
-  cfg.hooks.events.PostToolUseFailure[0].hooks[0].command = 'node "${ZCODE_PROJECT_DIR}/tools/whatever.mjs"'
-  const { problems } = doctorConfig(cfg, SCRIPTS)
-  assert.ok(!has(problems, /不存在/), '非技能相对形态无法静态核对，不得判：' + problems.join(' | '))
+  cfg.hooks.events.PostToolUseFailure[0].hooks[0].command =
+    'node "' + path.join(SCRIPTS, 'capture.mjs') + '" --text -'
+  const { problems } = doctorConfig(cfg, SCRIPTS, SCRIPTS)
+  assert.ok(!has(problems, /必然失败|不存在/), '真实存在的绝对路径不得误报：' + problems.join(' | '))
+  const cfg2 = baseConfig()
+  cfg2.hooks.events.PostToolUseFailure[0].hooks[0].command = 'node "' + path.join(SCRIPTS, 'no-such.mjs') + '" --text -'
+  const r2 = doctorConfig(cfg2, SCRIPTS, SCRIPTS)
+  assert.ok(has(r2.problems, /必然失败|不存在/), '不存在的绝对路径必须报出：' + r2.problems.join(' | '))
 })
 
 test('resolveSkillScriptsDir：命中已解析到的目录，且不假设项目内存在协议层', () => {
@@ -237,7 +271,15 @@ test('片段并进配置后 doctor 零问题（片段本身就是可接线的）
   const end = r.stdout.indexOf('\n}\n')
   mkdirSync(path.join(project, '.zcode'), { recursive: true })
   writeFileSync(path.join(project, '.zcode', 'config.json'), r.stdout.slice(0, end + 3), 'utf8')
-  const { problems } = doctorConfig(JSON.parse(readFileSync(path.join(project, '.zcode', 'config.json'), 'utf8')), SCRIPTS)
+  // 片段的入口是**项目侧薄壳**（项目相对路径）—— 体检按项目根核对它，所以项目里得先有它。
+  // 2026-10-21：入口从「层在项目内」改成「薄壳」后，这条断言的基准从「层目录」变成「项目根」。
+  mkdirSync(path.join(project, 'scripts'), { recursive: true })
+  writeFileSync(path.join(project, 'scripts', 'self-improving.mjs'), '// stub\n', 'utf8')
+  const { problems } = doctorConfig(
+    JSON.parse(readFileSync(path.join(project, '.zcode', 'config.json'), 'utf8')),
+    SCRIPTS,
+    project,
+  )
   assert.deepEqual(problems, [], `官方片段自己过不了自家体检：${problems.join(' | ')}`)
 })
 
@@ -270,7 +312,10 @@ test('--apply 在配置不存在时新建并接线（全新项目必须能接上
 
   const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'))
   assert.equal(cfg.hooks.enabled, true)
-  const { problems } = doctorConfig(cfg, SCRIPTS)
+  // 钩子入口是项目侧薄壳 —— 体检按项目根核对它，所以项目里得先有薄壳（init 会落它）
+  mkdirSync(path.join(project, 'scripts'), { recursive: true })
+  writeFileSync(path.join(project, 'scripts', 'self-improving.mjs'), '// stub\n', 'utf8')
+  const { problems } = doctorConfig(cfg, SCRIPTS, project)
   assert.deepEqual(problems, [], `新建的配置过不了自家体检：${problems.join(' | ')}`)
 })
 

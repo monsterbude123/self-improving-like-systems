@@ -43,6 +43,15 @@ const ALLOWLIST = [
       '形态，用于覆盖体检器「路径含 ${} 则不判存在性」那条分支。它是喂给 doctorConfig 的样本数据，' +
       '不是测试用来定位协议层自身的路径 —— 后者已被本文件顶部的 SCRIPTS 常量按 import.meta.url 解析替代。',
   },
+  {
+    file: 'install-project.test.mjs',
+    occurrences: 1,
+    reason:
+      '宿主配置样本：这条刻意构造 `${ZCODE_PROJECT_DIR}/.agents/skills/self-improving-like-systems/scripts/capture.mjs` ' +
+      '形态 —— 它复刻的是 2026-10-21 实测到的那类**死链**（层迁到仓外后，配置还指着项目内那份已删的副本，' +
+      '而旧口径只核对脚本名 ⇒ 体检全绿、钩子每次失败）。它用来钉住体检器「按命令里写的那个路径判存在性」这条判据。' +
+      '它是喂给 doctorConfig 的样本数据，不是测试用来定位协议层自身的路径 —— 后者已由本文件顶部的 SCRIPTS 常量按 import.meta.url 解析替代。',
+  },
 ]
 
 /**

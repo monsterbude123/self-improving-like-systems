@@ -27,30 +27,48 @@
  * O(1) spawn：全部判定进程内完成，零子进程。
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { resolveLayerCandidate } from './lib/layer-resolve.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 
 /**
- * 解析协议层脚本目录，查找顺序：**接入项目内 → 全局 → 协议层自身**。
+ * 钩子入口 = 项目侧薄壳（项目相对路径，由宿主在会话启动时展开）。
+ * 薄壳在运行期去层里找真脚本 —— 所以这份配置**可移植**（不含任何机器路径），
+ * 又**正确**（层装在仓外、换了位置、clone 换成 npm，都照样跑）。
+ */
+export const PROJECT_SHELL_REL = '${ZCODE_PROJECT_DIR}/scripts/self-improving.mjs'
+
+/**
+ * 解析协议层脚本目录 —— **指向真正装着协议层的那一份**。
  *
- * 为什么需要（2026-10-19 协议层独立成仓后暴露）：原实现只按「项目根/.agents/skills/<name>/scripts」
- * 这一条硬编路径推。协议层独立成仓并 clone 到全局后，真实安装位置通常是后两者，
- * 于是体检器在**错误基准**上核对脚本存在性 —— 要么漏判真实缺失，要么对着一片空目录全报不存在。
+ * ## 查找顺序（2026-10-21 统一）
  *
- * 顺序不能反：项目内优先是刻意的 —— 接入方显式 vendor 一份协议层，正是「这个项目要独立演进」
- * 的信号，全局旧版不该压住它；全局优先会让项目内的改动形同虚设。
+ * 委托给 {@link resolveLayerCandidate}（`scripts/lib/layer-resolve.mjs`）的单一顺序：
+ * env 显式 → 宿主 `~/.agents/skills/<name>`（clone 副本）→ npm 全局目录（npm 副本）
+ * → **协议层自身**（源码仓 / npx 临时目录）。
+ *
+ * ## 为什么不再「项目内优先」（2026-10-21 改）
+ *
+ * 原实现是「项目内 → 全局 → 自身」，理由是「接入方显式 vendor 一份协议层 = 这个项目要独立演进」。
+ * 但那份 vendor 副本同时是**两份事实源**的来源：改了一份忘了另一份，
+ * 门禁判的和提交里跑的不是同一份判据。协议层的形态纪律已经明确
+ * 「层装在仓外、项目侧只留薄壳」，所以项目内副本**不该**被选中。
+ *
+ * ## 为什么必须解析真实位置（这正是 2026-10-21 修掉的静默失效）
+ *
+ * 原实现生成的接线片段写死 `${ZCODE_PROJECT_DIR}/.agents/skills/self-improving-like-systems/scripts/...`
+ * —— 即「协议层在项目内」的假设。而层迁到仓外（全局安装）后，这个路径**不存在**，
+ * 钩子每次都失败，而体检器只核对「脚本名在解析到的层目录里在不在」、
+ * **从不核对命令里写的那个路径在不在** ⇒ 体检判绿、钩子全哑。
+ * 现在生成的片段指向**解析到的真实目录**，体检也按**命令里写的路径**核对。
  */
 export function resolveSkillScriptsDir(projectDir) {
-  const rel = path.join('.agents', 'skills', 'self-improving-like-systems', 'scripts')
-  const candidates = []
-  if (projectDir) candidates.push(path.resolve(projectDir, rel))
-  candidates.push(path.join(os.homedir(), '.agents', 'skills', 'self-improving-like-systems', 'scripts'))
-  candidates.push(HERE)
-  for (const c of candidates) if (existsSync(c)) return c
-  return candidates[0]
+  const hit = resolveLayerCandidate()
+  if (hit !== null) return path.join(hit.dir, 'scripts')
+  return HERE
 }
 
 /** 七事件全集 —— 写错任何一个，钩子永远不触发且**无任何报错**（宿主静默跳过）。 */
@@ -101,7 +119,16 @@ function resolveWorkDir(projectDir) {
  *                              省略时片段用 `${ZCODE_PROJECT_DIR}` 相对形式，由运行期展开。
  */
 function snippets(projectDir = null) {
-  const S = '${ZCODE_PROJECT_DIR}/.agents/skills/self-improving-like-systems/scripts'
+  // 钩子入口 = **项目侧薄壳**（项目相对路径），薄壳在运行期去层里找真脚本。
+  //
+  // 为什么绕这一圈（2026-10-21 修两个静默失效）：
+  //   ① 写死层的绝对路径 → 宿主配置里留下「某台机器的目录布局」，配置不可移植；
+  //      而宿主配置一旦被提交进仓，别的机器 clone 下来就指向一个不存在的目录。
+  //   ② 写「层在项目内」（`${ZCODE_PROJECT_DIR}/.agents/skills/<层名>/scripts/…`）→
+  //      层装在仓外时那条路径根本不存在，钩子每次都失败（实测主仓就这样哑了 25 小时，
+  //      而体检只核对脚本名、从不核对命令里写的路径 ⇒ 体检全绿）。
+  // 走薄壳，两个问题同时没有：配置里只有项目相对路径（可移植），运行期按层**实际所在**去找。
+  const S = PROJECT_SHELL_REL
   const W = projectDir ? resolveWorkDir(projectDir) : '${ZCODE_PROJECT_DIR}'
   // 每个事件的值是**数组**（一组匹配组），不是单个对象 —— 宿主的 `hooks.events.<Event>`
   // 契约就是数组，本仓在跑的 `.zcode/config.json` 与权威形态 `references/hook-wiring.json`
@@ -112,7 +139,7 @@ function snippets(projectDir = null) {
     SessionStart: [{
       hooks: [{
         type: 'command',
-        command: `node "${S}/hook-session-start.mjs" --project-dir "\${ZCODE_PROJECT_DIR}"`,
+        command: `node "${S}" hook-session-start --project-dir "\${ZCODE_PROJECT_DIR}"`,
         timeout: 10,
         statusMessage: '预加载相关经验条目',
       }],
@@ -121,7 +148,7 @@ function snippets(projectDir = null) {
       matcher: 'Bash|Write|Edit|NotebookEdit|MultiEdit|ApplyPatch',
       hooks: [{
         type: 'command',
-        command: `node "${S}/hook-tool-events.mjs"`,
+        command: `node "${S}" hook-tool-events`,
         timeout: 5,
         statusMessage: '记录工具事件用于批次节奏对账',
       }],
@@ -129,7 +156,7 @@ function snippets(projectDir = null) {
     PostToolUseFailure: [{
       hooks: [{
         type: 'command',
-        command: `node "${S}/capture.mjs" --source tool --kind tool_error --severity error `
+        command: `node "${S}" capture --source tool --kind tool_error --severity error `
           + `--text - --no-block --diag "${W}/hook-probe.log"`,
         timeout: 10,
         statusMessage: '记录本轮工具失败为经验系统事件',
@@ -138,7 +165,7 @@ function snippets(projectDir = null) {
     UserPromptSubmit: [{
       hooks: [{
         type: 'command',
-        command: `node "${S}/hook-user-correction.mjs"`,
+        command: `node "${S}" hook-user-correction`,
         timeout: 15,
         statusMessage: '捕获用户纠正信号',
       }],
@@ -146,7 +173,7 @@ function snippets(projectDir = null) {
     Stop: [{
       hooks: [{
         type: 'command',
-        command: `node "${S}/distill.mjs" --project-dir "\${ZCODE_PROJECT_DIR}"`,
+        command: `node "${S}" distill --project-dir "\${ZCODE_PROJECT_DIR}"`,
         timeout: 10,
         statusMessage: '蒸馏本轮失效事件为经验草案',
       }],
@@ -159,13 +186,41 @@ function usage(msg) {
   node hook-install.mjs                                  # 吐接线片段（零写盘）
   node hook-install.mjs --doctor --project-dir <项目目录>  # 体检各仓 .zcode/config.json
   node hook-install.mjs --apply   --project-dir <项目目录>  # 把缺失的条目补进配置
+  [--scripts-dir <协议层 scripts 目录>]  # 只影响 --doctor 的核对基准（默认自动解析）
   [--json]
   退出码：0=通过 / 1=体检发现问题 / 2=用法错误`)
   return 2
 }
 
-/** 逐条判一个钩子条目；返回问题串数组（空 = 无静态问题）。 */
-function checkHook(h, event, scriptDir) {
+/**
+ * 从钩子命令里抽出「会被执行的那个脚本路径」。
+ *
+ * 三层形态，顺序不能乱：
+ *   ① `project-relative` —— `${ZCODE_PROJECT_DIR}/<相对路径>`：运行期展开后就是项目里的那个路径；
+ *   ② `absolute` —— `C:/…` 或 `/…`：原样就是绝对路径；
+ *   ③ `loose` —— 其余形如 `dir/x.mjs` 的相对路径：按协议层目录解。
+ *
+ * @returns {{kind:'project-relative'|'absolute'|'loose', path:string}|null}
+ */
+export function extractScriptPath(body) {
+  const proj = /\$\{(?:ZCODE|CLAUDE)_PROJECT_DIR\}\/([^\s"']+?\.(?:mjs|cjs|js|sh))/.exec(body)
+  if (proj) return { kind: 'project-relative', path: proj[1] }
+  const abs = /(?:[A-Za-z]:[\\/]|\/)[^\s"']*?\.(?:mjs|cjs|js|sh)/.exec(body)
+  if (abs) return { kind: 'absolute', path: abs[0] }
+  const loose = /[A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:mjs|cjs|js|sh)\b/.exec(body)
+  if (loose) return { kind: 'loose', path: loose[0] }
+  return null
+}
+
+/**
+ * 逐条判一个钩子条目；返回问题串数组（空 = 无静态问题）。
+ *
+ * @param {object} h 钩子条目
+ * @param {string} event 事件名
+ * @param {string} scriptDir 解析到的协议层 scripts 目录
+ * @param {string|null} projectRoot 项目根 —— 判「项目相对路径」时必需
+ */
+function checkHook(h, event, scriptDir, projectRoot) {
   const bad = []
   if (typeof h !== 'object' || h === null) return [`${event}: 钩子条目不是对象`]
   const t = h.type
@@ -190,28 +245,53 @@ function checkHook(h, event, scriptDir) {
   for (const v of PLUGIN_ONLY_VARS) {
     if (body.includes(v)) bad.push(`${event}: 用了插件专有变量 ${v} —— 配置钩子里不展开，会在钩子内部直接报错`)
   }
-  // ① 运行期展开的片段（`${ZCODE_PROJECT_DIR}/.../scripts/<name>`）：路径前缀静态拼不出，
-  //    但**脚本名**是确定的，且协议层目录能被 resolveSkillScriptsDir 解析出来 ——
-  //    所以这条从「一律不判」升级为「按解析到的真实目录核对」。升级前后的差别是：
-  //    旧口径下协议层没装 / 装在别处 / 脚本改名，三种情况体检全绿，钩子运行期才炸。
-  const runtimeScript = /\$\{ZCODE_PROJECT_DIR\}\/[^\s"']*?\bscripts\/([A-Za-z0-9_.-]+\.(?:mjs|cjs|js|sh))/.exec(body)
-  if (runtimeScript && !existsSync(path.resolve(scriptDir, runtimeScript[1]))) {
-    bad.push(`${event}: 片段引用 ${runtimeScript[1]}，但解析出的协议层目录 ${scriptDir} 下没有它 —— 钩子必然失败`
-      + `（协议层未安装、装在别处，或该脚本已改名）`)
+  // 脚本路径存在性：**按命令里写的那个路径判**（2026-10-21 修静默失效）。
+  //
+  // 旧口径只核对「脚本名在解析到的层目录里在不在」，**从不核对命令实际指向的路径**。
+  // 于是「层迁出仓外、配置还指着项目内那份已删的副本」这种形态**体检全绿、钩子每次失败** ——
+  // 实测本机就是这样哑了 25 小时（事件库停在 10-20 18:16，条目却还在长）。
+  // 现在三条形态各按各的基准判：
+  //   ① 项目相对（`${ZCODE_PROJECT_DIR}/…`）→ 按**项目根**解（运行期就是这么展开的）；
+  //   ② 绝对路径 → 原样判；
+  //   ③ 其余相对路径 → 按协议层 scripts 目录解。
+  const sp = extractScriptPath(body)
+  if (sp) {
+    if (sp.kind === 'project-relative') {
+      if (!projectRoot) {
+        bad.push(`${event}: 命令含项目相对脚本路径 ${sp.path}，但未提供项目根 —— 无法核对它是否存在`)
+        return bad
+      }
+      const abs = path.resolve(projectRoot, sp.path)
+      if (!existsSync(abs)) {
+        bad.push(`${event}: 命令指向 ${abs} —— 该文件不存在，钩子必然失败`
+          + `（协议层装在仓外时，钩子应指向真实层目录而不是项目内副本）`)
+      }
+      return bad
+    }
+    if (sp.kind === 'absolute') {
+      if (!existsSync(sp.path)) {
+        bad.push(`${event}: 命令指向 ${sp.path} —— 该文件不存在，钩子必然失败`)
+      }
+      return bad
+    }
+    if (!existsSync(path.resolve(scriptDir, sp.path))) {
+      bad.push(`${event}: 引用的脚本 ${sp.path} 在 ${scriptDir} 下不存在 —— 钩子必然失败`)
+    }
     return bad
-  }
-  // ② 其余带模板变量的路径仍**不**判存在性：只有技能相对形态才可静态核对，
-  //    其他展开路径判「不存在」是纯误报（2026-10-18 实测踩到）。
-  if (body.includes('${')) return bad
-  const script = /[A-Za-z0-9_./-]+\.(mjs|cjs|js|sh)\b/.exec(body)
-  if (script && !existsSync(path.resolve(scriptDir, script[0]))) {
-    bad.push(`${event}: 引用的脚本 ${script[0]} 在 ${scriptDir} 下不存在 —— 钩子必然失败`)
   }
   return bad
 }
 
 /** 体检一份配置；返回 {problems, checked, missing} */
-export function doctorConfig(cfg, scriptDir) {
+/**
+ * 体检一份配置。
+ *
+ * @param {object} cfg 配置对象
+ * @param {string} scriptDir 解析到的协议层 scripts 目录
+ * @param {string|null} projectRoot 项目根 —— 判「项目相对脚本路径」时必需
+ * @returns {{problems:string[], checked:number, missing:string[]}}
+ */
+export function doctorConfig(cfg, scriptDir, projectRoot = null) {
   const problems = []
   const hooks = cfg?.hooks
   if (!hooks || typeof hooks !== 'object') {
@@ -238,9 +318,18 @@ export function doctorConfig(cfg, scriptDir) {
       continue
     }
     for (const g of groups) {
+      // 形状错一层（`[[{hooks:[…]}]]` 而不是 `[{hooks:[…]}]`）时，宿主读到的那一层是数组，
+      // 取不到 `hooks` 字段 ⇒ 整条事件被静默忽略：配置看着齐、宿主一条都不匹配、事件永远不投递。
+      // 2026-10-21 实测：本仓的 `hook-install --apply` 一直产出这个形状 —— 也就是说
+      // 「跑一次 --apply 就接上了线」这条路**从来没通过**。这里把它判红。
+      if (Array.isArray(g)) {
+        problems.push(`${event}: 事件值多包了一层数组（应为 [{hooks:[…]}]，实为 [[{hooks:[…]}]]）`
+          + ' —— 宿主读不到 hooks 字段，整条事件被静默忽略')
+        continue
+      }
       for (const h of g?.hooks ?? []) {
         checked += 1
-        problems.push(...checkHook(h, event, scriptDir))
+        problems.push(...checkHook(h, event, scriptDir, projectRoot))
       }
       if (g?.matcher !== undefined && typeof g.matcher === 'string') {
         try { new RegExp(g.matcher) } catch { problems.push(`${event}: matcher ${g.matcher} 不是合法正则（非法表达式永不匹配）`) }
@@ -269,12 +358,19 @@ export function main(argv) {
   let doDoctor = false
   let doApply = false
   let asJson = false
+  let scriptsDir = null
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--project-dir') { projectDir = argv[++i]; continue }
     if (a === '--doctor') { doDoctor = true; continue }
     if (a === '--apply') { doApply = true; continue }
     if (a === '--json') { asJson = true; continue }
+    if (a === '--scripts-dir') {
+      const next = argv[++i]
+      if (next === undefined || next.startsWith('--')) return usage('--scripts-dir 后须跟目录')
+      scriptsDir = path.resolve(next)
+      continue
+    }
     if (a === '--help' || a === '-h') { usage(''); return 0 }
     return usage(`未知参数 ${a}`)
   }
@@ -299,12 +395,30 @@ export function main(argv) {
     let cfg
     try { cfg = JSON.parse(readFileSync(cfgPath, 'utf8')) }
     catch (e) { console.log(`[doctor] ❌ 配置不是合法 JSON：${e.message}`); return 1 }
-    const r = doctorConfig(cfg, resolveSkillScriptsDir(root))
+    const r = doctorConfig(cfg, scriptsDir ?? resolveSkillScriptsDir(root), root)
     if (asJson) { console.log(JSON.stringify({ config: cfgPath, ...r }, null, 2)); return r.problems.length === 0 ? 0 : 1 }
     return renderDoctor(r.problems, r.missing, cfgPath)
   }
 
   // --apply：只增缺失条目，既有条目一律不动（禁止覆盖别人的接线）
+  const r = applyHooks(root)
+  for (const l of r.lines) console.log(l)
+  return r.ok ? 0 : 1
+}
+
+/**
+ * 把缺失的钩子条目补进 `<projectDir>/.zcode/config.json`（**只增不减**）。
+ *
+ * 抽成导出函数是为了让一键接入命令（install-project.mjs）复用同一套接线逻辑 ——
+ * 接线只有一份实现。否则「命令手工接的」和「安装器接的」会长得不一样，
+ * 而那种差异要等到某天钩子不触发时才被发现。
+ *
+ * @param {string} projectDir 项目根
+ * @returns {{ok:boolean, created:boolean, added:string[], kept:string[], lines:string[]}}
+ */
+export function applyHooks(projectDir) {
+  const root = path.resolve(projectDir)
+  const cfgPath = path.join(root, '.zcode', 'config.json')
   let cfg = null
   let created = false
   if (!existsSync(cfgPath)) {
@@ -320,11 +434,11 @@ export function main(argv) {
   } else {
     try { cfg = JSON.parse(readFileSync(cfgPath, 'utf8')) }
     catch (e) {
-      if (asJson) { console.log(JSON.stringify({ ok: false, reason: `配置不是合法 JSON：${e.message}` })); return 1 }
-      console.log(`[apply] ❌ 配置存在但不是合法 JSON：${e.message}`)
-      console.log(`[apply]   ${cfgPath}`)
-      console.log('[apply]   不覆盖它 —— 一份坏掉的配置更可能是别人正在编辑。请手工修好或手工并入片段。')
-      return 1
+      return { ok: false, created: false, added: [], kept: [], lines: [
+        `[apply] ❌ 配置存在但不是合法 JSON：${e.message}`,
+        `[apply]   ${cfgPath}`,
+        '[apply]   不覆盖它 —— 一份坏掉的配置更可能是别人正在编辑。请手工修好或手工并入片段。',
+      ] }
     }
   }
   cfg.hooks = cfg.hooks ?? {}
@@ -334,21 +448,28 @@ export function main(argv) {
   const kept = []
   for (const [event, frag] of Object.entries(snippets(root))) {
     if (cfg.hooks.events[event]) { kept.push(event); continue }
-    cfg.hooks.events[event] = [frag]
+    // `frag` **本身就已经是数组**（一组匹配组），直接赋值 —— 不能再包一层。
+    // 2026-10-21 实测：旧写法 `= [frag]` 产出 `[[{hooks:[…]}]]`（双层），
+    // 而宿主契约是 `events.<Event> = [{matcher?, hooks:[…]}]`（单层，见
+    // references/hook-wiring.json 与本仓既有的 .zcode/config.json）。
+    // 双层时宿主读到的那一层是**数组**，取不到 `hooks` 字段 ⇒ **钩子被静默忽略**：
+    // 配置看着齐、宿主一条都不匹配、事件永远不投递，而没有任何报错。
+    // 也就是说：`--apply` 从来没给任何人真正接上过线。
+    cfg.hooks.events[event] = frag
     added.push(event)
   }
   mkdirSync(path.dirname(cfgPath), { recursive: true })
   writeFileSync(cfgPath, `${JSON.stringify(cfg, null, 2)}\n`, 'utf8')
+  const lines = []
   if (created) {
-    if (asJson) { console.log(JSON.stringify({ ok: true, created: cfgPath, added, kept })); return 0 }
-    console.log(`[apply] 新建配置：${cfgPath}`)
-    console.log('[apply]   该文件此前不存在，本次只写入 hooks 段（无任何既有内容被覆盖）。')
-    console.log('[apply]   它机器本地、被 exclude、不入库 —— 同事各自在自己机器上跑一次本命令。')
+    lines.push(`[apply] 新建配置：${cfgPath}`)
+    lines.push('[apply]   该文件此前不存在，本次只写入 hooks 段（无任何既有内容被覆盖）。')
+    lines.push('[apply]   它机器本地、被 exclude、不入库 —— 同事各自在自己机器上跑一次本命令。')
   }
-  console.log(`[apply] 已补：${added.length ? added.join(', ') : '(无)'}`)
-  console.log(`[apply] 已存在未动：${kept.length ? kept.join(', ') : '(无)'}`)
-  console.log('[apply] ⚠️ 配置改动**下个会话生效**（hooks 在会话启动时读一次），本会话验证不了。')
-  return 0
+  lines.push(`[apply] 已补：${added.length ? added.join(', ') : '(无)'}`)
+  lines.push(`[apply] 已存在未动：${kept.length ? kept.join(', ') : '(无)'}`)
+  lines.push('[apply] ⚠️ 配置改动**下个会话生效**（hooks 在会话启动时读一次），本会话验证不了。')
+  return { ok: true, created, added, kept, lines }
 }
 
 if (process.argv[1] && import.meta.url === new URL(`file://${path.resolve(process.argv[1])}`).href) {
