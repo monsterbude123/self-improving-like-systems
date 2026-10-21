@@ -1,6 +1,6 @@
 {
   "name": "self-improving-like-systems",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "通用经验/自进化系统协议层：把踩坑、纠正、失效模式沉淀成可检索、可退役、可被门禁强制执行的知识。四实体契约 + 校验器 + 守卫派发 + 全套判据，零第三方依赖。",
   "type": "module",
   "license": "MIT",
