@@ -87,13 +87,23 @@ test('破坏测试：工作区行尾被改成 CRLF → 必须拦下（两条通�
   }
 })
 
-test('本仓工作区：会被打包的文件里没有 CRLF 漂移（发版时包与 tag 才可能逐字节一致）', () => {
+test('本仓工作区：会被打包的文件里没有 CRLF 漂移（发版时包与 tag 才可能逐字节一致）', (t) => {
   // 为什么断言的是「没有 CR」而不是「与 tag 逐字节一致」：
   // 「与 tag 一致」只在**打完 tag 还没提交新东西**的那一刻成立 ——
   // 把它写进常驻测试，就会在每次开发提交后变红，而那不是缺陷，是开发本身。
   // 常驻可判的稳定不变量是：**打包集里的文件在工作区里是 LF**（与 .gitattributes 的 eol=lf 一致）。
   // 「与 tag 逐字节一致」是**发版那一刻**的判据 —— 它住在 check-release.mjs 里，由 prepublishOnly 触发。
-  const files = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' })
+  //
+  // ⚠️ npm 装的副本**没有 .git**（那是两条通道的形态差别）⇒ 这条断言在 npm 副本里
+  // 判不了（没有「工作区 vs 索引」这回事）。这种情况**显式跳过并说明**，
+  // 不静默通过 —— 静默通过会让「npm 副本里这条判据根本没跑」这件事看不见。
+  let listed
+  try {
+    listed = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' })
+  } catch {
+    return t.skip('这不是 git 检出（npm 副本没有 .git）—— 工作区漂移判据在此形态不适用')
+  }
+  const files = listed
     .split('\n')
     .filter((f) => f !== '' && /^(SKILL\.md|AGENTS\.md|README\.md|package\.json|bin\/|scripts\/|references\/|tests\/)/.test(f))
   const drifted = files.filter((f) => {
