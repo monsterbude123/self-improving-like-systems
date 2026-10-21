@@ -30,8 +30,8 @@ const ROOT = path.resolve(HERE, '..')
  * tests/ 不在其中。
  */
 const SCAN_EXT = new Set(['.md', '.json', '.yaml', '.yml', '.mjs'])
-const ROOT_DOCS = ['README.md', 'SKILL.md', 'AGENTS.md']
-const SCAN_DIRS = ['references', 'scripts']
+const ROOT_DOCS = ['README.md', 'SKILL.md', 'AGENTS.md', 'package.json']
+const SCAN_DIRS = ['references', 'scripts', 'bin']
 
 /**
  * 机器本地绝对路径的两种常见形态。
@@ -75,10 +75,11 @@ function hitsIn(text, { isCode }) {
 }
 
 describe('分发面本地路径禁入', () => {
-  it('扫描面非空且覆盖根级文档与两个子目录', () => {
+  it('扫描面非空且覆盖根级文档与三个子目录', () => {
     const surface = scanSurface()
     assert.ok(surface.length >= 20, `扫描面异常：只枚举到 ${surface.length} 个文件（应覆盖 README/SKILL + references + scripts）`)
-    for (const must of ['README.md', 'SKILL.md', 'references/schema.md', 'scripts/validate.mjs']) {
+    for (const must of ['README.md', 'SKILL.md', 'AGENTS.md', 'package.json',
+      'references/schema.md', 'scripts/validate.mjs', 'bin/self-improving.mjs']) {
       assert.ok(surface.includes(must), `扫描面必须含 ${must}`)
     }
     assert.ok(!surface.some((f) => f.startsWith('tests/')), 'tests/ 按设计不扫（合成夹具长得像真路径正是其作用）')

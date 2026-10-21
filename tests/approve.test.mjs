@@ -802,9 +802,13 @@ describe('通用性（零项目耦合）', () => {
     const files = [
       ...readdirSync(dir).filter((f) => f.endsWith('.mjs')).map((f) => path.join(dir, f)),
       ...readdirSync(path.join(dir, 'lib')).filter((f) => f.endsWith('.mjs')).map((f) => path.join(dir, 'lib', f)),
+      // 2026-10-21：bin/ 是 npm 通道的分发器，随包分发，同样不许夹带本仓项目物。
+      // 「不在名单里」= 漏网 —— 那正是 F5 补漏时的结论，一并沿用到新目录。
+      ...readdirSync(path.join(SKILL_ROOT, 'bin')).filter((f) => f.endsWith('.mjs')).map((f) => path.join(SKILL_ROOT, 'bin', f)),
     ]
-    assert.ok(files.length >= 12, `扫描面异常：只枚举到 ${files.length} 个脚本（应覆盖全部 scripts/*.mjs + scripts/lib/*.mjs）`)
+    assert.ok(files.length >= 12, `扫描面异常：只枚举到 ${files.length} 个脚本（应覆盖全部 scripts/*.mjs + scripts/lib/*.mjs + bin/*.mjs）`)
     assert.ok(files.some((f) => f.endsWith('hook-session-start.mjs')), '扫描面必须含 hook-session-start.mjs（本次 F5 的漏网文件）')
+    assert.ok(files.some((f) => f.endsWith('self-improving.mjs')), '扫描面必须含 bin/self-improving.mjs（npm 通道的分发器）')
     for (const f of files) {
       for (const name of couplingHits(readFileSync(f, 'utf8'))) {
         assert.fail(`${path.basename(f)} 命中项目物 ${name}（注释已剥离 ⇒ 这是可执行/用户可见字符串）`)

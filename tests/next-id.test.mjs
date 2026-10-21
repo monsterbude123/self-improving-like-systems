@@ -59,12 +59,19 @@ const DATE = '20990131'
  * 立刻变红：副本里脚本落在业务仓，账本跟着去业务仓根，而 SKILL_ROOT 仍指 skill 目录。
  *
  * 这类「只在某种布局下成立」的断言比没有断言更糟 —— 它给了一层假的安全感。
- * 这里复刻脚本的推导，且推导不出时报错而非跳过。
+ *
+ * ⚠️ 2026-10-21 补：**必须复刻脚本的完整推导链，包括它的非 git 兜底**。
+ * 脚本是 `ROOT=$(git rev-parse --show-toplevel || pwd)` / `COMMON=$(git -C "$ROOT" rev-parse
+ * --git-common-dir || echo "$ROOT/.git")` —— 不在 git 仓里时它退回 cwd，仍然能占号。
+ * 本函数此前只复刻了 git 那半条链，于是 **npm 通道（tarball 里没有 .git）直接判红**
+ * （实测：打包后跑判据 `# fail 1`）。只复刻一半的推导 = 复刻错了：
+ * 断言的是「脚本会做的事」，脚本却做的是另一件。
  */
 function claimsDir() {
-  const root = spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 30_000 }).stdout?.trim()
-  const common = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8', timeout: 30_000 }).stdout?.trim()
-  if (!root || !common) return null
+  // git 不可用 / 不在仓里 → 脚本退回 cwd（它的 `|| pwd` 兜底），这里必须同口径。
+  const root = spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 30_000 }).stdout?.trim() || process.cwd()
+  const common = spawnSync('git', ['-C', root, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8', timeout: 30_000 }).stdout?.trim()
+    || path.join(root, '.git')
   return path.join(path.dirname(common), '.learnings-work', 'claims')
 }
 
@@ -93,10 +100,22 @@ function releaseClaim(id, ledger) {
 /**
  * 本文件**加载时**的账本快照，供文件末尾那条「判据不得留下占用」断言比对。
  * 在模块顶层算（而不是每条用例各算一次）：这是「进来时的样子」，只该有一个时刻。
+ *
+ * 快照的是**占用文件**（`*.claim`），不是「目录是否存在」——
+ * 目录本身是运行时产物（脚本会 `mkdir -p`），它出现不算残留；
+ * 而**占号文件留着才是残留**（假编号会永久顶高真实条目的号段）。
+ * 2026-10-21 改口径：此前快照的是整个目录的 readdir，且目录不存在时记 null，
+ * 于是 npm 通道（tarball 里没有 .git、也没有 .learnings-work/）整条断言被跳过 ——
+ * 「跳过，不计为通过」正是本仓要消灭的那类空洞。
  */
+function claimFiles(dir) {
+  if (!dir || !existsSync(dir)) return []
+  return readdirSync(dir).filter((f) => f.endsWith('.claim')).sort()
+}
+
 const LEDGER_AT_LOAD = (() => {
   const d = claimsDir()
-  return d && existsSync(d) ? readdirSync(d).sort() : null
+  return claimFiles(d)
 })()
 
 function run(args, extra = {}) {
@@ -191,11 +210,10 @@ describe('learnings 编号分配器', () => {
   it('判据自身不得在编号账本里留下占用（假编号会永久顶高真实条目的号段）', (t) => {
     if (!has) return t.skip(SKIP)
     const ledger = claimsDir()
-    if (!ledger || !LEDGER_AT_LOAD) return t.skip('不在 git 仓里：next-id.sh 本来也占不到号')
     assert.deepEqual(
-      existsSync(ledger) ? readdirSync(ledger).sort() : null,
+      claimFiles(ledger),
       LEDGER_AT_LOAD,
-      '跑完这一整个文件，账本目录必须回到进来时的样子。' +
+      '跑完这一整个文件，账本里的占用文件必须回到进来时的样子。' +
         '每个 --claim 都 releaseClaim() 过了；这里再兜一层，是因为清理失败在 Windows 上' +
         '静默过一次（MSYS 路径 existsSync 恒假），而那次的症状就是这条断言变红。',
     )

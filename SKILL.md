@@ -7,6 +7,20 @@ description: 通用经验/自进化系统技能 —— 四实体契约（Entry/E
 
 > **边界一句话**：只承载**协议**（四实体 schema 契约 + 校验器 + 配置/registry 模板）；与项目专属 wrapper skill 的分工 = 协议通用在此、项目路径/工具/门禁绑定在各仓自己的配置，协议改动走本技能、绑定改动走项目仓，互不复制判据（单一归宿）。
 
+## 两条分发通道（同一份内容）
+
+| 通道 | 装到哪 | 适合谁 | 怎么更新 |
+|---|---|---|---|
+| **GitHub clone** | `~/.agents/skills/self-improving-like-systems` | 宿主技能发现 | `git pull` |
+| **npm / npx** | npm 全局目录 / 临时目录 | 免安装试用、按项目调用 | `npm i -g`（**无 git 历史**） |
+
+- GitHub：<https://github.com/monsterbude123/self-improving-like-systems>
+- npm 包名：`self-improving-like-systems` → `npx self-improving-like-systems init --project-dir . --apply` / `npx self-improving-like-systems self-test`
+
+**两条通道不共存**：`~/.agents/skills/self-improving-like-systems` 只能是其中一种。
+npm 副本**没有 git 历史**，**不要 `git pull`**。
+npm 包是纯分发器（`bin/self-improving.mjs` 只转发到 `scripts/*.mjs`），**不设 `postinstall`**。
+
 ## 目录结构索引
 
 | 路径 | 角色 |

@@ -34,7 +34,7 @@ npm run si:install
 
 它负责 clone / 更新协议层并跑一次自检。协议层目录不存在时会明确报错，不会静默跳过。
 
-**直接装**：
+**直接装**（宿主技能发现走这条）：
 
 ```bash
 git clone https://github.com/monsterbude123/self-improving-like-systems.git \
@@ -43,30 +43,81 @@ git clone https://github.com/monsterbude123/self-improving-like-systems.git \
 
 装到 `~/.agents/skills/` 下，宿主会自动发现；目录名与 skill 名一致，无需重命名或映射。
 
+**免安装试用**（npm 通道，见下文「两条通道，一份内容」）：
+
+```bash
+npx self-improving-like-systems init --project-dir . --apply
+npx self-improving-like-systems self-test
+```
+
 > 不要用宿主的 skill 安装器分发本仓：它的降级路径只复制 `SKILL.md`，
 > 会丢掉 19 个脚本 —— skill 加载得起来，而每处 `node xxx.mjs` 都是死路径。
 
-### 分发来源只有一条
+### 分发来源不写本地路径
 
-本仓的读者是别人，因此**任何一份文档里的安装来源都指向 GitHub**，
+本仓的读者是别人，因此**任何一份文档里的安装来源都指向 GitHub 或 npm**，
 不得出现指向某台机器的磁盘路径 —— 那种路径在接盘者自己的机器上必然失败，
 而排查成本全落在他们身上。
 
-`tests/no-local-path.test.mjs` 盯着这条：往 `README.md` / `SKILL.md` / `references/**` /
-`scripts/**` 里写进「盘符 + 工作区目录」或「盘符 + 真实用户名」的绝对路径会被当场拦下
-（判据形态写在守卫的注释里，这里不复述 —— 复述会把守卫自己要拦的字面量写进扫描面）。
-`tests/` 下的合成夹具按设计不在扫描面内 —— 它们长得像真路径正是其作用。
+`tests/no-local-path.test.mjs` 盯着这条：往 `README.md` / `SKILL.md` / `AGENTS.md` /
+`references/**` / `scripts/**` 里写进「盘符 + 工作区目录」或「盘符 + 真实用户名」的
+绝对路径会被当场拦下（判据形态写在守卫的注释里，这里不复述 —— 复述会把守卫自己要拦的
+字面量写进扫描面）。`tests/` 下的合成夹具按设计不在扫描面内 —— 它们长得像真路径正是其作用。
 
-### 为什么不开 npm 包
+### 两条通道，一份内容
 
-本仓是零第三方依赖的纯 `.mjs` + markdown：没有 `node_modules`、没有 `package.json`、
-自检零依赖跑全。发 npm 包解决不了任何实际问题，引入的却是一条要长期维护的分发通道
-（版本策略 / 弃用流程 / 发布权限），收益与成本不成比例。
+本仓有**两条**分发通道。它们发的是**同一份内容** —— 同一 tag 发布，不是两条各自漂移的线。
 
-更要紧的是它与「单一来源」直接冲突：一旦有了 npm，`git clone` 与 `npm i` 两条路
-就会各自漂移，而本仓的协议判据要求全网只有一份。
+| 通道 | 装到哪 | 适合谁 | 怎么更新 |
+|---|---|---|---|
+| **GitHub clone** | `~/.agents/skills/self-improving-like-systems` | 宿主技能发现（宿主按 `~/.agents/skills/<name>/` 找技能） | `git pull` |
+| **npm / npx** | npm 全局目录 / 临时目录 | 免安装试用、按项目调用 | `npm i -g`（**无 git 历史**） |
 
-**判断留档于 `tests/no-local-path.test.mjs` 的注释**，避免日后有人「顺手补一个 npm」。
+**GitHub clone**（宿主技能发现走这条）：
+
+```bash
+git clone https://github.com/monsterbude123/self-improving-like-systems.git \
+  ~/.agents/skills/self-improving-like-systems
+```
+
+**npm / npx**（免安装试用走这条）：
+
+```bash
+npx self-improving-like-systems init --project-dir . --apply   # 在项目里铺一份最小可用实例
+npx self-improving-like-systems self-test                       # 跑全套判据
+npm i -g self-improving-like-systems                            # 装到全局（当命令用）
+```
+
+npm 包是**纯分发器**：`bin/self-improving.mjs` 只把子命令转发到既有 `scripts/*.mjs`，
+零业务逻辑（第二份逻辑 = 第二个事实源）。npm 包**不设 `postinstall`** ——
+装到 `~/.agents/skills/` 这类改家目录的动作必须显式调用，不该在别人机器上静默发生。
+
+#### 两条通道不共存
+
+同一台机器上，`~/.agents/skills/self-improving-like-systems` **只能是其中一种**。
+两处都装会出现「宿主加载的是 clone 副本、命令行跑的是 npm 副本」——
+两者内容可能已分叉，而**没有任何东西会报错**。
+
+npm 副本**没有 git 历史**，**不要 `git pull`**（那不是仓库）。更新走 `npm i -g`；
+clone 副本才走 `git pull`。
+
+#### 「同一份内容」怎么保证
+
+npm 包**从 git tag 发布**。发布前断言 `git describe --tags` 与 `package.json` 的
+`version` **必须相等**，由 `prepublishOnly` 自动触发（`scripts/check-release.mjs`）——
+不一致就**发布失败**，而不是发布出两个各说各话的版本。
+
+npm 的首个版本一旦发布即**不可改**（同版本号不可重发），所以发布前必须跑完全量判据。
+
+#### 为什么现在有 npm 了（2026-10-21 修订）
+
+此前本节写的是「为什么不开 npm 包」，理由是「两条路会各自漂移」。
+那条理由**成立**，但解法不是「不开」，而是**让两条路无法漂移**：
+同 tag 发布 + 发布前硬断言 + 文档写清「哪条装在哪、怎么更新、不能共存」。
+一个不给别人试用入口的协议层，接入成本全落在接盘者身上 —— 那是比漂移更贵的代价。
+
+`tests/no-local-path.test.mjs` 盯的始终是**本地路径**（与 npm 无关），
+「不泄露某台机器的盘符」这条没变。
 
 ## 自检
 
