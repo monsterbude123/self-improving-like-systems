@@ -92,7 +92,7 @@ function runCli(cli, args, dir, { config = 'config-on.yaml' } = {}) {
 
 const approveArgs = (dir, extra = []) => [
   '--proposal', path.join(dir, 'seed-proposal', PROPOSAL),
-  '--guard-script', 'guards/vitest-worker-timeout.sh',
+  '--guard-script', 'guards/vitest-worker-timeout.mjs',
   ...extra,
 ]
 
@@ -180,10 +180,10 @@ describe('批准落盘（条目 + 守卫登记 + 守卫骨架）', () => {
       assert.match(after, /covered_entries: \["ERR-20261016-003"\]/, '绑定条目 ID')
       assert.match(after, /mode: shadow/, '登记即 shadow —— 拦截权要挣，不是注册即得')
 
-      const guard = path.join(dir, 'guards', 'vitest-worker-timeout.sh')
+      const guard = path.join(dir, 'guards', 'vitest-worker-timeout.mjs')
       assert.ok(existsSync(guard), '守卫骨架应生成')
       const gsrc = readFileSync(guard, 'utf8')
-      assert.match(gsrc, /exit 2/, '守卫契约：命中判据 exit 2')
+      assert.match(gsrc, /process\.exit\(2\)/, '守卫契约：命中判据 exit 2')
       assert.match(gsrc, /--input-stdin/, '守卫须支持派发层喂 stdin')
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -194,13 +194,41 @@ describe('批准落盘（条目 + 守卫登记 + 守卫骨架）', () => {
     const dir = freshTmp()
     try {
       assert.equal(doApprove(dir).status, 0)
-      const guard = path.join(dir, 'guards', 'vitest-worker-timeout.sh')
-      const bad = spawnSync('bash', [guard, '--input-stdin'], { input: VIOLATION, encoding: 'utf8' })
-      const good = spawnSync('bash', [guard, '--input-stdin'], { input: 'refactor: rename a local variable', encoding: 'utf8' })
+      const guard = path.join(dir, 'guards', 'vitest-worker-timeout.mjs')
+      const bad = spawnSync('node', [guard, '--input-stdin'], { input: VIOLATION, encoding: 'utf8' })
+      const good = spawnSync('node', [guard, '--input-stdin'], { input: 'refactor: rename a local variable', encoding: 'utf8' })
       assert.equal(bad.status, 2, `违规样本必须命中判据:\n${bad.stdout}${bad.stderr}`)
       assert.equal(good.status, 0, `正常样本必须放行:\n${good.stdout}${good.stderr}`)
     } finally {
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('node 骨架的判据语义 = POSIX ERE（不是 JS RegExp）：字符类认、反斜杠类不认', () => {
+    // 「什么算命中」是**人的决定**，不是骨架生成器可以偷换的实现细节。
+    // 换方言会静默改变判据，两条判据各自证明方言没被换：
+    //   ① [[:digit:]] 是 **ERE 独有**的字符类（JS RegExp 没有，会当成字面字符集）→ ERE 必须命中；
+    //   ② \d 在 **JS RegExp 里是数字类**、在 POSIX ERE 里只是字面 'd' → ERE 必须不命中。
+    // 任一条结果相反 = 判据方言被偷换 = 命中面悄悄变了。
+    const dirA = freshTmp()
+    try {
+      const r = doApprove(dirA, ['--pattern', 'a[[:digit:]]+b'])
+      assert.equal(r.status, 0, r.all)
+      const guard = path.join(dirA, 'guards', 'vitest-worker-timeout.mjs')
+      const hit = spawnSync('node', [guard, '--input-stdin'], { input: 'xx a123b yy', encoding: 'utf8' })
+      assert.equal(hit.status, 2, `ERE 字符类 [[:digit:]] 必须命中（JS RegExp 下它不命中）:\n${hit.stdout}${hit.stderr}`)
+    } finally {
+      rmSync(dirA, { recursive: true, force: true })
+    }
+    const dirB = freshTmp()
+    try {
+      const r = doApprove(dirB, ['--pattern', 'a\\db'])
+      assert.equal(r.status, 0, r.all)
+      const guard = path.join(dirB, 'guards', 'vitest-worker-timeout.mjs')
+      const hit = spawnSync('node', [guard, '--input-stdin'], { input: 'xx a1b yy', encoding: 'utf8' })
+      assert.equal(hit.status, 0, `ERE 下 \\d 不是数字类（只有 JS RegExp 才是）—— 命中即说明方言被偷换:\n${hit.stdout}${hit.stderr}`)
+    } finally {
+      rmSync(dirB, { recursive: true, force: true })
     }
   })
 
@@ -418,8 +446,8 @@ describe('记账与异常（fail-open）', () => {
       assert.equal(doApprove(dir).status, 0)
       // 把真守卫换成一个"自己坏了"的守卫：内部抛错路径以 exit 1 返回（非约定码 = 异常）
       writeFileSync(
-        path.join(dir, 'guards', 'vitest-worker-timeout.sh'),
-        '#!/usr/bin/env bash\necho "boom: 守卫内部抛异常" >&2\nexit 1\n',
+        path.join(dir, 'guards', 'vitest-worker-timeout.mjs'),
+        '#!/usr/bin/env node\nconsole.error("boom: 守卫内部抛异常")\nprocess.exit(1)\n',
         'utf8',
       )
       const r = dispatch(dir, { text: VIOLATION })
@@ -438,7 +466,7 @@ describe('记账与异常（fail-open）', () => {
     const dir = freshTmp()
     try {
       assert.equal(doApprove(dir).status, 0)
-      rmSync(path.join(dir, 'guards', 'vitest-worker-timeout.sh'))
+      rmSync(path.join(dir, 'guards', 'vitest-worker-timeout.mjs'))
       const r = dispatch(dir, { text: VIOLATION })
       assert.equal(r.status, 0, `守卫缺失不得阻塞提交:\n${r.all}`)
       assert.equal(readState(dir)[GUARD_KEY].last_result, 'error')
@@ -458,8 +486,8 @@ describe('守卫静默失效可见性（error_streak + --dry-run 视图）', () 
     try {
       assert.equal(doApprove(dir).status, 0)
       writeFileSync(
-        path.join(dir, 'guards', 'vitest-worker-timeout.sh'),
-        '#!/usr/bin/env bash\necho "boom: 守卫内部抛异常" >&2\nexit 1\n',
+        path.join(dir, 'guards', 'vitest-worker-timeout.mjs'),
+        '#!/usr/bin/env node\nconsole.error("boom: 守卫内部抛异常")\nprocess.exit(1)\n',
         'utf8',
       )
       for (let i = 0; i < 3; i++) {
@@ -482,10 +510,10 @@ describe('守卫静默失效可见性（error_streak + --dry-run 视图）', () 
     const dir = freshTmp()
     try {
       assert.equal(doApprove(dir).status, 0)
-      writeFileSync(path.join(dir, 'guards', 'vitest-worker-timeout.sh'), '#!/usr/bin/env bash\nexit 1\n', 'utf8')
+      writeFileSync(path.join(dir, 'guards', 'vitest-worker-timeout.mjs'), '#!/usr/bin/env node\nprocess.exit(1)\n', 'utf8')
       for (let i = 0; i < 2; i++) assert.equal(dispatch(dir, { text: VIOLATION }).status, 0)
       assert.equal(readState(dir)[GUARD_KEY].error_streak, 2)
-      writeFileSync(path.join(dir, 'guards', 'vitest-worker-timeout.sh'), '#!/usr/bin/env bash\nexit 0\n', 'utf8')
+      writeFileSync(path.join(dir, 'guards', 'vitest-worker-timeout.mjs'), '#!/usr/bin/env node\nprocess.exit(0)\n', 'utf8')
       assert.equal(dispatch(dir, { text: CLEAN }).status, 0)
       const st = readState(dir)[GUARD_KEY]
       assert.equal(st.error_streak, 0, '成功一次即清零（累计 error_runs 仍是 2 —— 两者口径不同）')
@@ -500,7 +528,7 @@ describe('守卫静默失效可见性（error_streak + --dry-run 视图）', () 
     const dir = freshTmp()
     try {
       assert.equal(doApprove(dir).status, 0)
-      writeFileSync(path.join(dir, 'guards', 'vitest-worker-timeout.sh'), '#!/usr/bin/env bash\nexit 1\n', 'utf8')
+      writeFileSync(path.join(dir, 'guards', 'vitest-worker-timeout.mjs'), '#!/usr/bin/env node\nprocess.exit(1)\n', 'utf8')
       assert.equal(dispatch(dir, { text: VIOLATION }).status, 0)
       assert.equal(readState(dir)[GUARD_KEY].error_streak, 1)
       assert.match(dryRun(dir).all, /无连续 error ≥ 3 次的守卫/, `单次 error 不该进清单:\n${dryRun(dir).all}`)

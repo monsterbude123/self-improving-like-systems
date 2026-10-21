@@ -171,6 +171,108 @@ exit 0
 `
 }
 
+/**
+ * 生成守卫骨架（**node 版**）—— 与 {@link renderGuardTemplate} 逐条等价（判据、退出码、文案口径）。
+ *
+ * ## 为什么要有 node 版（2026-10-21）
+ *
+ * ① **一个真 bug**：registry 的 `command` 第一段按**扩展名**选（`.sh` → bash，否则 node），
+ *    而骨架模板**只有一个 bash 版**。于是 `--guard-script guards/foo.mjs` 会把 **bash 源码**
+ *    写进 `.mjs` 文件、却注册成 `command: ['node', 'guards/foo.mjs']` ——
+ *    **node 去跑 bash 源码 = SyntaxError**，守卫起不来 → 派发层 fail-open 记 error →
+ *    影子期永远攒不满绿 → 条目永远拿不到拦截权，且**全程零报错**（那个 SyntaxError
+ *    在守卫的 stderr 里，被 fail-open 吞掉）。
+ *
+ * ② **一个真 flake**：bash spawn 在本机（Windows + Git Bash）实测 0.6–1.0s，
+ *    **全套件并行时能到 10.0s+** → 撞上 run-guard 的 `GUARD_TIMEOUT_MS`（10s）→
+ *    ETIMEDOUT → 同样 fail-open 记 error → 攒不满绿。
+ *    本仓的生命周期夹具早就踩过这坑（`tests/fixtures/lifecycle/guards/dup-token.mjs`
+ *    的头部注释记着同一件事），当时是**把夹具守卫单独换成 node**；
+ *    而 `approve.mjs` 生成的骨架是**产品代码**，那条路只修了夹具、没修产品。
+ *    node 进程 spawn ≈ 0.1s 且与负载无关 ⇒ 10s 上限变成事实上的不可达。
+ *
+ * 两条合起来：**node 版骨架是产品该有的形态**，不是「为了让某个用例变绿」的补丁。
+ *
+ * 契约与 bash 版**逐条一致**（同 token、同判据、同退出码 0/2、同 stderr 文案），
+ * 差别只在「用什么解释器跑」与「怎么读输入」。
+ */
+export function renderGuardTemplateNode({ key, pattern, entryId, proposalName, tokens }) {
+  return `#!/usr/bin/env node
+// ${key} —— 经验系统守卫（approve.mjs 由草案 ${proposalName} 生成，绑定条目 ${entryId}）
+//
+// 退出码契约（run-guard.mjs 依赖，不可改）：
+//   0 = 放行 / 2 = 命中判据（阻断提交）/ 其他 = 守卫自身异常 → 派发层 fail-open 只记审计不阻塞
+// 判据抓手（来源 = 草案「命中判据的抓手」）：${tokens.length > 0 ? tokens.join(' / ') : '（草案无 token，由 --pattern 指定）'}
+//   ⚠️ 人工复核点：抓得太宽会误拦（shadow 期只警告不阻断，抓够 3 次绿才会真拦），
+//      抓得太窄则拦不住 —— 改完必须重跑破坏测试：喂违规样本应变红、喂正常样本应保持绿。
+//
+// 输入：默认读暂存区 diff（提交那一刻的判据面）；派发层带 --input-stdin 时改读 stdin。
+// 性能：最多两次 spawn（git 一次）读完判据输入，**不按文件起子进程**（O(1) spawn 纪律）。
+import { spawnSync } from 'node:child_process'
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const KEY = ${JSON.stringify(key)}
+const PATTERN = ${JSON.stringify(pattern)}
+
+function readStdin() {
+  try {
+    return readFileSync(0, 'utf8')
+  } catch {
+    return ''
+  }
+}
+
+const input = process.argv.includes('--input-stdin')
+  ? readStdin()
+  : (() => {
+      const r = spawnSync('git', ['diff', '--cached', '--diff-filter=ACMR', '--', '.'], { encoding: 'utf8' })
+      return r.stdout ?? ''
+    })()
+
+// 判据用 bash grep -E 的正则口径（POSIX ERE）；node 的 RegExp 是另一种方言，
+// 直接换会改变「什么算命中」—— 那属于改判据，必须由人显式决定，不能由骨架生成器偷换。
+// 所以这里仍走一次 grep：与 bash 版**逐条同口径**。
+//
+// ⚠️ 判据**不能直接放进 argv**：Windows 上 Git 的 grep.exe 是 MSYS2 程序，被原生 Windows
+// 进程 spawn 时会对 argv 做通配/花括号展开（a.{0,200}b → a.0b / a.200b），
+// 判据被悄悄改写后守卫会判错（实测：误报「守卫自身异常（grep 退出码 2）」）。
+// bash 版不受影响 —— bash 自己先把引号里的判据原样交给 grep.exe，不经 MSYS 的 argv 展开。
+// 所以这里走 grep -f <文件>：判据经文件不经 argv，展开无从发生，ERE 语义与 bash 版逐条一致。
+let patternDir = null
+try {
+  patternDir = mkdtempSync(join(tmpdir(), 'si-guard-'))
+  writeFileSync(join(patternDir, 'pattern.txt'), PATTERN + '\\n', 'utf8')
+} catch (e) {
+  console.error(\`FAIL [\${KEY}]: 守卫自身异常（判据文件不可写: \${e && e.message}）\`)
+  process.exit(1)
+}
+let g
+try {
+  g = spawnSync('grep', ['-Eq', '-f', join(patternDir, 'pattern.txt')], { input, encoding: 'utf8' })
+} finally {
+  try { rmSync(patternDir, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+}
+if (g.error) {
+  // grep 起不来（无 grep / 权限）→ 守卫自身异常 → 派发层 fail-open 记 error，不阻塞提交。
+  console.error(\`FAIL [\${KEY}]: 守卫自身异常（grep 不可用: \${g.error.message}）\`)
+  process.exit(1)
+}
+if (g.status === 0) {
+  console.log(\`FAIL [\${KEY}]: 暂存改动命中已登记失效形态（判据: \${PATTERN}）\`)
+  process.exit(2)
+}
+if (g.status === 1) {
+  console.log(\`PASS [\${KEY}]: 未命中判据（\${PATTERN}）\`)
+  process.exit(0)
+}
+// grep 的其它退出码（>1）= grep 自身出错 → 守卫异常，不当成「未命中」。
+console.error(\`FAIL [\${KEY}]: 守卫自身异常（grep 退出码 \${g.status}）\`)
+process.exit(1)
+`
+}
+
 /** 拆出 frontmatter 结束行之后的正文（复用 extractFrontmatter 的判定口径：第二个独立 `---` 行）。 */
 function splitAfterFrontmatter(text) {
   const lines = String(text).replace(/\r\n/g, '\n').split('\n')
@@ -495,7 +597,15 @@ export function main(argv) {
     }
 
     const guardExists = existsSync(guardScriptAbs)
-    const guardText = guardExists ? null : renderGuardTemplate({ key: guardKey, pattern, entryId: id, proposalName, tokens })
+    // 骨架模板必须与 registry 的 `command` 第一段**同解释器**（2026-10-21 修一个真 bug）：
+    // 此前模板只有 bash 版，而 command 按扩展名选解释器 ——
+    // `--guard-script guards/foo.mjs` 会把 bash 源码写进 .mjs、却注册成 node 去跑它 ⇒ SyntaxError，
+    // 守卫起不来 ⇒ fail-open 记 error ⇒ 影子期永远攒不满绿 ⇒ 条目永远拿不到拦截权，**全程零报错**。
+    const guardText = guardExists
+      ? null
+      : (isShell
+          ? renderGuardTemplate({ key: guardKey, pattern, entryId: id, proposalName, tokens })
+          : renderGuardTemplateNode({ key: guardKey, pattern, entryId: id, proposalName, tokens }))
 
     if (dryRun) {
       console.error(`[approve] dry-run：批准 ${proposalName} → ${toPosix(path.relative(baseDir, entryFile))}；守卫 ${guardKey} ${alreadyRegistered ? '（已登记，将并入 covered_entries）' : '将登记'}；${guardExists ? '守卫脚本已存在，不覆盖' : '将生成守卫骨架'}（零写盘）`)

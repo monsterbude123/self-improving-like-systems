@@ -203,13 +203,26 @@ describe('锁的原语（不丢更新 / 不永久死锁）', () => {
         import { withFileLock } from ${JSON.stringify(pathToUrl(LOCK_LIB))}
         import { readFileSync, writeFileSync } from 'node:fs'
         const [target, lock] = process.argv.slice(1)
-        withFileLock(lock, () => {
+        const r = withFileLock(lock, () => {
           const prev = readFileSync(target, 'utf8')
           Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60)
           writeFileSync(target, prev + 'x\\n')
         })
+        // 拿不到锁（超时 / 不可用）时 withFileLock 返回 null —— **临界区没跑**，
+        // 所以那个进程**不会写那一行**。必须把它与「真丢更新」区分开：
+        // 2026-10-21 实测宿主满载时 8 个进程有 2 个等锁超时（默认 5s 预算），
+        // 行数只有 6，而旧写法把这判成「丢更新 = 锁失效」——
+        // **结论是反的**：锁是对的，只是没抢到。两种失败必须各说各的话。
+        if (r === null) { console.log('LOCK_UNAVAILABLE'); process.exit(3) }
+        process.exit(0)
       `
       const results = await spawnConcurrent(8, () => ['--input-type=module', '-e', child, target, lock])
+      const unavailable = results.filter((r) => r.code === 3)
+      assert.equal(
+        unavailable.length, 0,
+        `${unavailable.length}/8 个进程没拿到锁（等锁超时）—— 宿主满载形态，与「丢更新」不是一回事。` +
+        '拿不到锁的进程按契约**没有**进临界区（所以没写那一行）。判据是「拿到锁的都写到了」。',
+      )
       assert.equal(results.filter((r) => r.code === 0).length, 8)
       const lines = readFileSync(target, 'utf8').split('\n').filter((l) => l !== '')
       assert.equal(lines.length, 8, '持锁写必须 8 行齐全（少行 = 丢更新 = 锁失效）')

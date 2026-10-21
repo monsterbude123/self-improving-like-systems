@@ -92,8 +92,41 @@ function sleepSync(ms) {
 export const DEFAULT_SHADOW_RUNS = 3
 /** 命中账分型版本：v2 = 野外（wild）/ 探针（probe）两型账。存量文件缺此标记 → 按 legacy-unknown 回填。 */
 export const HIT_LEDGER_VERSION = 2
-/** 单个守卫的执行上限（ms）—— 超时按「守卫自身异常」处理（fail-open），不当作命中判据。 */
-const GUARD_TIMEOUT_MS = 10_000
+/**
+ * 单个守卫的执行上限（ms）—— 超时按「守卫自身异常」处理（fail-open），不当作命中判据。
+ *
+ * 默认 10s。**可用 env `SELF_IMPROVING_GUARD_TIMEOUT_MS` 覆盖**（2026-10-21 加）。
+ *
+ * ## 为什么给它一个开关
+ *
+ * 这个上限的**语义**是「守卫自己卡住了，别让它把提交堵死」—— 它不是「守卫该跑多久」的判据。
+ * 但 10s 这个**取值**在两类机器上不够：
+ *   · 本机（Windows + Git Bash）实测一次 bash spawn 空闲 0.6–1.0s，**全套件并行时能到 10.0s+**
+ *     → 撞上限 → ETIMEDOUT → fail-open 记 error → **不计绿** → 影子期攒不满 →
+ *     条目永远拿不到拦截权，**且全程零报错**（守卫的 stderr 被 fail-open 吞掉）。
+ *   · CI runner / 容器里同理：CPU 配额越紧，spawn 越慢。
+ * 换个环境就换一个取值 —— 那是**环境事实**，不该写死在协议里。
+ *
+ * 覆盖是**显式 opt-in**：不改就仍是 10s（存量行为不变），只在「这台机器 spawn 确实慢」时调高。
+ * 取值非法（非正整数）时**回落默认值并告警**，绝不静默按 0 或负数执行。
+ */
+const DEFAULT_GUARD_TIMEOUT_MS = 10_000
+const GUARD_TIMEOUT_MS = resolveGuardTimeoutMs(process.env.SELF_IMPROVING_GUARD_TIMEOUT_MS)
+
+/**
+ * 解析守卫超时取值。非法值 → 回落默认 + stderr 告警（不静默）。
+ * @param {string|undefined} raw env 原值
+ * @returns {number} 正整数毫秒
+ */
+export function resolveGuardTimeoutMs(raw) {
+  if (raw === undefined || raw === null || String(raw).trim() === '') return DEFAULT_GUARD_TIMEOUT_MS
+  const n = Number(String(raw).trim())
+  if (!Number.isFinite(n) || n <= 0) {
+    console.error(`[run-guard] SELF_IMPROVING_GUARD_TIMEOUT_MS 非法（${JSON.stringify(raw)}）→ 回落 ${DEFAULT_GUARD_TIMEOUT_MS}ms`)
+    return DEFAULT_GUARD_TIMEOUT_MS
+  }
+  return Math.floor(n)
+}
 /** 锁内读状态账的重试次数 / 间隔：瞬时读失败（Windows rename 后他进程仍持句柄 EBUSY/EPERM）
  *  重试即可恢复；全部失败则本次记 degraded 跳过写 —— 绝不按空账写回（会覆盖并发者的计数）。 */
 const STATE_READ_RETRIES = 3
