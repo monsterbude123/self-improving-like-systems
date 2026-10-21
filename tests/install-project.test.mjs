@@ -86,6 +86,34 @@ test('指针内容必须含 GitHub 仓地址 + 可执行 npm 命令形态（门�
   assert.ok(new RegExp(`(npm i -g|npx)\\s+${LAYER_NPM_PACKAGE}`).test(content), '指针必须含可执行的 npm 命令形态')
 })
 
+test('指针里的体检命令在没有 package.json 的项目里也可用（npm run 形态会 Missing script）', () => {
+  // 为什么钉这条：指针是「层没装 / 装坏了怎么办」的唯一指引 —— 别的 agent 只会读它。
+  // 指向一条跑不通的命令（没 package.json 的项目里 `npm run si:doctor` = Missing script），
+  // 等于在最需要指引的那一刻把人指向死路。
+  const content = pointerContent(DEFAULT_POINTER_NAME)
+  assert.ok(
+    content.includes('node scripts/self-improving.mjs doctor'),
+    '指针必须给出一律可用的 node 形态体检命令',
+  )
+  const npmAliasLine = content.split('\n').find((l) => l.includes('npm run si:doctor'))
+  assert.ok(npmAliasLine, '指针仍应给出 npm 快捷别名')
+  assert.ok(
+    /有 package\.json|没有 package\.json/.test(npmAliasLine),
+    'npm 别名必须标明前提（否则读者会以为它永远可用）：\n' + npmAliasLine,
+  )
+})
+
+test('破坏测试：指针只留 npm run 形态 → 判红（无 package.json 项目里的死路指引）', () => {
+  const broken = pointerContent(DEFAULT_POINTER_NAME)
+    .replace(/node scripts\/self-improving\.mjs doctor/g, 'npm run si:doctor')
+  assert.ok(!broken.includes('node scripts/self-improving.mjs doctor'), '注入应真的删掉 node 形态')
+  // 判据：node 形态必须仍可从指针里找到
+  assert.ok(
+    /node scripts\/self-improving\.mjs doctor/.test(pointerContent(DEFAULT_POINTER_NAME)),
+    '原指针必须含 node 形态（否则这个破坏测试恒绿，说明它测不到东西）',
+  )
+})
+
 test('接入后的项目：层门禁判据全过（层在位 + 指针两通道齐全 + 无仓内副本）', () => {
   const dir = tmpProject()
   try {

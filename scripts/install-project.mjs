@@ -76,11 +76,12 @@ description: 本项目的经验系统入口。触发词：learnings、教训、�
 
 **本项目侧**：
 - 薄壳：\`scripts/self-improving.mjs\`（层在哪、怎么跑判据、怎么判装没装好）
-- 体检：\`npm run si:doctor\` —— 层没装时它给出**可操作的安装提示**，不会让调用方自己猜
-- 门禁：\`npm run si:gate\`（pre-commit 可调）
+- 体检：\`node scripts/self-improving.mjs doctor\` —— 层没装时它给出**可操作的安装提示**，不会让调用方自己猜
+- 门禁：\`node scripts/self-improving.mjs gate\`（pre-commit 可调）
 - 实例：条目区 \`.self-improving/\`，运行期 \`${WORK_ROOT}/\`，配置 \`.self-improving.yaml\`
 
-**层没装 / 装坏了怎么办**：跑 \`npm run si:doctor\`。它会告诉你层没装还是装不完整，并给出装法。
+**层没装 / 装坏了怎么办**：跑 \`node scripts/self-improving.mjs doctor\`。它会告诉你层没装还是装不完整，并给出装法。
+**快捷别名**：项目有 package.json 时另可用 \`npm run si:doctor\` / \`si:gate\` / \`si:install\` / \`si:self-test\`（没有 package.json 就用上面那行 node 形式，两者等价）。
 **改判据去协议层仓**（本仓改判据 = 两份事实源），本文件不复述协议正文。
 `
 }
