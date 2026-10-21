@@ -87,12 +87,23 @@ test('破坏测试：工作区行尾被改成 CRLF → 必须拦下（两条通�
   }
 })
 
-test('本仓当前状态：工作区与最新 tag 逐字节一致（发版前自己先过一遍）', () => {
-  const r = spawnSync(process.execPath, [CHECK], { cwd: ROOT, encoding: 'utf8' })
-  // 本仓的 tag 由发版流程打；在 tag 打好之前跑这道断言没有意义 —— 只在有 tag 时断言。
-  const hasTag = spawnSync('git', ['describe', '--tags', '--abbrev=0'], { cwd: ROOT, encoding: 'utf8' }).status === 0
-  if (!hasTag) return
-  assert.equal(r.status, 0, `本仓工作区与 tag 不一致，发版会被拦下：\n${r.stdout}${r.stderr}`)
+test('本仓工作区：会被打包的文件里没有 CRLF 漂移（发版时包与 tag 才可能逐字节一致）', () => {
+  // 为什么断言的是「没有 CR」而不是「与 tag 逐字节一致」：
+  // 「与 tag 一致」只在**打完 tag 还没提交新东西**的那一刻成立 ——
+  // 把它写进常驻测试，就会在每次开发提交后变红，而那不是缺陷，是开发本身。
+  // 常驻可判的稳定不变量是：**打包集里的文件在工作区里是 LF**（与 .gitattributes 的 eol=lf 一致）。
+  // 「与 tag 逐字节一致」是**发版那一刻**的判据 —— 它住在 check-release.mjs 里，由 prepublishOnly 触发。
+  const files = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' })
+    .split('\n')
+    .filter((f) => f !== '' && /^(SKILL\.md|AGENTS\.md|README\.md|package\.json|bin\/|scripts\/|references\/|tests\/)/.test(f))
+  const drifted = files.filter((f) => {
+    try {
+      return readFileSync(path.join(ROOT, f)).includes(13)
+    } catch {
+      return false
+    }
+  })
+  assert.deepEqual(drifted, [], `工作区里这些文件是 CRLF —— npm 包会与 tag 不逐字节一致：${drifted.join(', ')}`)
 })
 
 test('闸门只读：跑它不会改动任何文件', () => {
