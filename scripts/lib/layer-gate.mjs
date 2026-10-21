@@ -120,7 +120,8 @@ export function installHints() {
   return [
     '装法（二选一，同一台机器上不共存）：',
     `  1. npm i -g ${LAYER_NPM_PACKAGE}          ← npm 通道（免安装试用；无 git 历史，不要 git pull）`,
-    `  2. git clone ${LAYER_GITHUB_URL} ~/.agents/skills/${LAYER_SKILL_NAME}   ← clone 通道（更新走 git pull）`,
+    `  2. npm run si:install                   ← clone 通道（接入命令写进清单的脚本形态）`,
+    `     或 git clone ${LAYER_GITHUB_URL} ~/.agents/skills/${LAYER_SKILL_NAME}（更新走 git pull）`,
     `     或免安装直接用：npx ${LAYER_NPM_PACKAGE} install --project-dir . --apply`,
     `两条通道发的是同一份内容（协议仓同 tag 发布），但**同一台机器上不共存**。`,
     `或显式指定层位置：set ${LAYER_ENV_VAR}=<层根绝对路径>（Unix 用 export）。`,
