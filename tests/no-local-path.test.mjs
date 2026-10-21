@@ -24,9 +24,13 @@ import { stripComments } from './lib/strip-comments.mjs'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
 
-/** 扫描面：根级文档 + references/ 与 scripts/ 下的文档、配置与脚本。tests/ 不在其中。 */
+/**
+ * 扫描面：根级文档（含 `AGENTS.md` —— 2026-10-21 起它是接盘者打开的第一个文件，
+ * 同样写给「别人」，同样不许泄露某台机器的盘符）+ references/ 与 scripts/ 下的文档、配置与脚本。
+ * tests/ 不在其中。
+ */
 const SCAN_EXT = new Set(['.md', '.json', '.yaml', '.yml', '.mjs'])
-const ROOT_DOCS = ['README.md', 'SKILL.md']
+const ROOT_DOCS = ['README.md', 'SKILL.md', 'AGENTS.md']
 const SCAN_DIRS = ['references', 'scripts']
 
 /**
