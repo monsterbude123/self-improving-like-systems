@@ -266,6 +266,37 @@ describe('批准落盘（条目 + 守卫登记 + 守卫骨架）', () => {
  * 绑到共享守卫上时永远进不了该守卫的 covered_entries；而 trace 拍3 正是按
  * covered_entries 判 —— 结果六拍对「同守卫的第二个条目」结构性不可完成。
  */
+describe('六位形态与同 ID 异 slug（01-01 编号方案）', () => {
+  it('正向：六位时分秒 ID 可批准落盘（现行形态）', () => {
+    const dir = freshTmp()
+    try {
+      const id = 'ERR-20261024-143025'
+      const r = doApprove(dir, ['--id', id])
+      assert.equal(r.status, 0, `六位 ID 批准必须成功：${r.all}`)
+      assert.ok(existsSync(path.join(dir, 'entries', `${id}-vitest-worker-timeout.md`)), '六位 ID 条目须落正式区')
+      assert.match(r.all, /守卫 .* 登记/, `须走正常登记流程：${r.all}`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('同 ID 异 slug：同 ID 换提案名再批必须 exit 1（写路径自兜唯一性，不靠精确同名）', () => {
+    const dir = freshTmp()
+    try {
+      assert.equal(doApprove(dir).status, 0)
+      // 同 ID、不同提案文件名 → slug 不同 → 不再命中「精确同名文件」检查,
+      // 必须被同 ID 前缀检查拦下(旧实现会静默放行,产出第二条同 ID 条目)。
+      const other = path.join(dir, 'seed-proposal', 'PROP-20261016-ffffffffffff0000-another-guard-topic.md')
+      cpSync(path.join(dir, 'seed-proposal', PROPOSAL), other)
+      const r = runCli(APPROVE, ['--proposal', other, '--approve', '--id', ENTRY_ID, '--guard-script', 'guards/vitest-worker-timeout.mjs'], dir)
+      assert.equal(r.status, 1, `同 ID 异 slug 必须硬失败,实际 status=${r.status}: ${r.all}`)
+      assert.match(r.all, /同 ID 条目已存在/, `报错须指明是同 ID 冲突：${r.all}`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('共享守卫的第二个条目（covered_entries 并入）', () => {
   const SECOND_ID = 'ERR-20261016-004'
 

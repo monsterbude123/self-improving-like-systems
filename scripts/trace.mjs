@@ -696,7 +696,7 @@ export function main(argv) {
     else if (a === '--config') cliConfig = path.resolve(next)
     else projectDir = path.resolve(next)
   }
-  if (onlyId !== null && !/^(?:LRN|ERR|FEAT)-\d{8}-\d{3}$/.test(onlyId)) return usage(`--id 形态非法: ${onlyId}`)
+  if (onlyId !== null && !/^(?:LRN|ERR|FEAT)-\d{8}-(?:\d{6}|\d{3})$/.test(onlyId)) return usage(`--id 形态非法: ${onlyId}（须 LRN|ERR|FEAT-YYYYMMDD-HHMMSS,存量三位 NNN 仍收）`)
 
   let config = null
   let baseDir = null

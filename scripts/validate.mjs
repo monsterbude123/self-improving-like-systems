@@ -492,8 +492,9 @@ export function validateRegistryEntry(entry) {
   return out
 }
 
-/** covered_entries 条目 ID 形态（schema.md §3：`LRN|ERR|FEAT-YYYYMMDD-NNN`；不含随机后缀段）。 */
-export const COVERED_ENTRY_ID_RE = /^(?:LRN|ERR|FEAT)-\d{8}-\d{3}$/
+/** covered_entries 条目 ID 形态（schema.md §3：`LRN|ERR|FEAT-YYYYMMDD-HHMMSS`；存量三位 `NNN` 形态只读兼容；不含随机后缀段）。
+ *  六位分支在前:全锚定下两种排列等价,但显式定序让五处消费方形态一致,不许各写各的。 */
+export const COVERED_ENTRY_ID_RE = /^(?:LRN|ERR|FEAT)-\d{8}-(?:\d{6}|\d{3})$/
 
 /**
  * registry 守卫条目 `covered_entries` 的存在性判据（schema.md §3「门禁校验每条在 entries_dir 存在」）。

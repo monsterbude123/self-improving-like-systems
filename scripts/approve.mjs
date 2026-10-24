@@ -31,7 +31,7 @@
  *   登记 ≠ 拦截。登记时 `mode: shadow` + `shadow_required`，计数与升级由 `run-guard.mjs` 裁决
  *   （前 N 次 warn-only，全绿自动升 blocking）。
  */
-import { chmodSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { loadContext, flushAudit } from './inject.mjs'
@@ -41,8 +41,8 @@ import { extractFrontmatter, validateEntry, validateRegistryEntry, EVENT_ID_RE a
 import { parseYaml } from './lib/yaml-lite.mjs'
 import { loadRegistry, readGuardState, writeGuardState, guardStatePath, withStateLock, DEFAULT_SHADOW_RUNS } from './run-guard.mjs'
 
-/** 条目 ID 形态（与项目命名门禁同款形态；唯一性归命名门禁，本文件只管形态）。 */
-const ENTRY_ID_RE = /^(?:LRN|ERR|FEAT)-\d{8}-\d{3}$/
+/** 条目 ID 形态（与项目命名门禁同款形态；六位时分秒为现行形态,存量三位只读兼容;本文件管形态,唯一性见写路径的同 ID 前缀检查）。 */
+const ENTRY_ID_RE = /^(?:LRN|ERR|FEAT)-\d{8}-(?:\d{6}|\d{3})$/
 /** registry key 形态 = guard_ref 形态（小写连字符），与 validate.mjs 同款。 */
 const GUARD_KEY_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 /**
@@ -481,8 +481,8 @@ export function main(argv) {
       return usage('--reject 不接受落盘参数（拒绝路径必须零变更）')
     }
   } else {
-    if (!id) return usage('--approve 必填 --id <LRN|ERR|FEAT-YYYYMMDD-NNN>（条目 ID 由人分配，提案器不代签）')
-    if (!ENTRY_ID_RE.test(id)) return usage(`--id 形态非法: ${id}（须 LRN|ERR|FEAT-YYYYMMDD-NNN）`)
+    if (!id) return usage('--approve 必填 --id <LRN|ERR|FEAT-YYYYMMDD-HHMMSS|NNN>（条目 ID 由人分配，提案器不代签;六位时分秒为现行形态,存量三位仍收）')
+    if (!ENTRY_ID_RE.test(id)) return usage(`--id 形态非法: ${id}（须 LRN|ERR|FEAT-YYYYMMDD-HHMMSS,存量三位 NNN 仍收）`)
     if (!guardScriptArg) return usage('--approve 必填 --guard-script <守卫脚本路径>（无守卫 = 无判据的条目 = 愿望不是教训）')
     if (shadowRunsArg !== null && (!Number.isInteger(shadowRunsArg) || shadowRunsArg < 0)) return usage('--shadow-runs 须为 ≥0 整数')
   }
@@ -551,6 +551,16 @@ export function main(argv) {
       console.error(`FAIL: 目标条目已存在 ${toPosix(path.relative(baseDir, entryFile))}（零变更；换 ID 或先人工处置）`)
       return 1
     }
+    // 同 ID 前缀占用检查（任意 slug,2026-10-24):分配器保证不了不用分配器的人,
+    // 写路径必须自己兜住「同 ID 异 slug」的重复 —— 否则同秒双写各得一条同 ID 条目,
+    // 而下面的 type 前缀检查只认形态不认重复。存在性判据零变更(只读目录,不写盘)。
+    const idClash = existsSync(entriesDir)
+      ? readdirSync(entriesDir).find((n) => n === `${id}.md` || n.startsWith(`${id}-`))
+      : undefined
+    if (idClash) {
+      console.error(`FAIL: 同 ID 条目已存在 ${toPosix(path.relative(baseDir, path.join(entriesDir, idClash)))}（零变更；换 ID 或先人工处置）`)
+      return 1
+    }
     const today = new Date().toISOString().slice(0, 10)
     const shadowRequired = shadowRunsArg ?? DEFAULT_SHADOW_RUNS
     const entryText = renderEntry({ fm, id, guardKey, proposalName, proposalText, today, reason, shadowRuns: shadowRequired })
@@ -562,7 +572,7 @@ export function main(argv) {
       for (const v of entryViolations2) console.error(`  - ${v}`)
       return 1
     }
-    // id 前缀须与 type 一致（形态纪律；唯一性归项目命名门禁）
+    // id 前缀须与 type 一致（形态纪律；唯一性由上一段的同 ID 前缀检查在本仓兜底 + 分配器跨树兜底）
     if (!path.basename(entryFile).startsWith(`${entryFm.type}-`)) {
       console.error(`FAIL: 条目 ID 前缀与 type 不一致（type=${entryFm.type} · id=${id}）`)
       return 1

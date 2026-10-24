@@ -450,6 +450,8 @@ describe('validateCoveredEntries（schema.md §3 存在性判据 · 2026-10-17 �
 
   it('ID 形态正则导出与判据一致（供消费方复用，不写第二份正则）', () => {
     assert.ok(COVERED_ENTRY_ID_RE.test('LRN-20261015-001'))
+    assert.ok(COVERED_ENTRY_ID_RE.test('LRN-20261024-143025'), '六位时分秒形态合法(现行形态)')
+    assert.ok(COVERED_ENTRY_ID_RE.test('ERR-20261024-000001'), '凌晨六位形态合法')
     assert.ok(!COVERED_ENTRY_ID_RE.test('LRN-20261015-001-A7B'))
     assert.ok(!COVERED_ENTRY_ID_RE.test('TODO-20261015-001'))
   })
