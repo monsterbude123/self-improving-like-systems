@@ -10,6 +10,8 @@
  *   |---|---|
  *   | 把兄弟工作树那一层从可见域删掉 | 「必须看见兄弟工作树已占用的号」 |
  *   | 把 claim 原子占用改成普通写入 | 「两个并发 claim 不得拿到同一个号」 |
+ *   | 把 claim 文件名改回带工作树 slug 段（$ID.$SLUG.claim） | 「跨树同号:同一 ID 的 claim 已在案 → exit 3」
+ *   |                                               —— 各树各建各的 claim,noclobber 双双成功,同秒跨树未被兜住 |
  *
  * 运行：在协议层根目录下 node --test tests/next-id.test.mjs
  * 接入：本仓 npm run test:gates 已挂（同 SKILL_ROOT/tests 下其余 *.test.mjs 同理）
@@ -17,7 +19,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -119,11 +121,14 @@ const LEDGER_AT_LOAD = (() => {
 })()
 
 function run(args, extra = {}) {
+  // extra.env 是「追加」,不是「整体替换」—— 放在 ...extra 之后展开会把它前面
+  // 合并好的 LEARNINGS_DATE 一起覆盖掉(实测:钉时刻用例因此拿到真实日期)。
+  const { env: extraEnv, ...spawnOpts } = extra
   const r = spawnSync('bash', [SCRIPT, ...args], {
     encoding: 'utf8',
     timeout: 120_000,
-    env: { ...process.env, LEARNINGS_DATE: DATE, ...extra.env },
-    ...extra,
+    ...spawnOpts,
+    env: { ...process.env, LEARNINGS_DATE: DATE, ...extraEnv },
   })
   return { status: r.status, out: (r.stdout ?? '').trim(), err: (r.stderr ?? '').trim() }
 }
@@ -133,7 +138,55 @@ describe('learnings 编号分配器', () => {
     if (!has) return t.skip(SKIP)
     const r = run(['LRN'])
     assert.equal(r.status, 0, `探测应成功：${r.err}`)
-    assert.match(r.out, /^LRN-20990131-\d{3}$/, `输出形态应为 LRN-<date>-NNN，实际=${r.out}`)
+    assert.match(r.out, /^LRN-20990131-\d{6}$/, `输出形态应为 LRN-<date>-HHMMSS 六位，实际=${r.out}`)
+  })
+
+  it('钉时刻：候选时分秒已被占用（claim 在案）→ 必须避让到下一秒', (t) => {
+    if (!has) return t.skip(SKIP)
+    const claims = claimsDir()
+    mkdirSync(claims, { recursive: true })
+    const occupied = path.join(claims, `LRN-${DATE}-120000.claim`)
+    writeFileSync(occupied, 'worktree=some-other-tree\n', 'utf8')
+    try {
+      const r = run(['LRN'], { env: { LEARNINGS_TIME: '120000' } })
+      assert.equal(r.status, 0, `探测应成功：${r.err}`)
+      assert.equal(r.out, `LRN-${DATE}-120001`, `候选 120000 已被占用,应避让到 120001,实际=${r.out}`)
+    } finally {
+      rmSync(occupied, { force: true })
+    }
+  })
+
+  it('跨树同号:两个进程同秒抢同一候选(钉同一时刻并发 --claim)→ 恰一个成功,其余 exit 3', (t) => {
+    if (!has) return t.skip(SKIP)
+    const claims = claimsDir()
+    // claim 文件按 ID 唯一(无工作树 slug 段):两进程钉同一时刻 → 同一候选 → 同一 claim 路径,
+    // noclobber 只放一个进,后到者必须 exit 3,不得静默换号成功。
+    const results = Array.from({ length: 3 }, () => run(['LRN', '--claim'], { env: { LEARNINGS_TIME: '130000' } }))
+    const claimed = results.filter((r) => r.status === 0).map((r) => r.out.split('\n')[0])
+    const conflicted = results.filter((r) => r.status === 3)
+    try {
+      assert.equal(new Set(claimed).size, claimed.length, `并发下出现重复编号:${claimed.join(', ')}`)
+      assert.equal(claimed.length + conflicted.length, results.length, '每个并发 claim 要么成功要么报冲突')
+      assert.ok(claimed.length >= 1, '至少一个进程要拿到号')
+      for (const r of conflicted) assert.match(r.err, /并发冲突/, `冲突信息须说明原因:${r.err}`)
+    } finally {
+      for (const r of results) releaseClaim(r.out.split('\n')[0], claims)
+    }
+  })
+
+  it('--claim 成功后,账本里的占用文件按 ID 唯一（文件名不含工作树 slug 段）', (t) => {
+    if (!has) return t.skip(SKIP)
+    const claims = claimsDir()
+    const before = claimFiles(claims)
+    const r = run(['LRN', '--claim'], { env: { LEARNINGS_TIME: '140000' } })
+    try {
+      assert.equal(r.status, 0, `claim 应成功：${r.err}`)
+      const id = r.out.split('\n')[0]
+      const added = claimFiles(claims).filter((f) => !before.includes(f))
+      assert.deepEqual(added, [`${id}.claim`], `新增占用应为且仅为 <ID>.claim（无 slug 段）,实际=${added.join(', ')}`)
+    } finally {
+      for (const f of claimFiles(claims)) if (!before.includes(f)) rmSync(path.join(claims, f), { force: true })
+    }
   })
 
   it('--claim：占用后同一个号不会再被发出去（claim 进入下一轮可见域）', (t) => {

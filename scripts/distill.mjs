@@ -449,7 +449,7 @@ export function renderProposal({ cluster, scope, scopeBasis, config }) {
     '- [ ] scope 归域正确',
     '- [ ] 守卫判据可执行，且破坏测试「注入违规样本必须变红」已实测',
     `- [ ] 已在 registry 登记守卫 key \`${guard.key}\`（未登记前 \`guard_ref\` 保持 null）`,
-    '- [ ] 决定晋升为正式条目（并分配 `LRN|ERR-FEAT-YYYYMMDD-NNN` ID）或丢弃',
+    '- [ ] 决定晋升为正式条目（并分配 `LRN|ERR|FEAT-YYYYMMDD-HHMMSS` ID，存量三位形态仍合法；取号走 next-id.sh --claim）或丢弃',
     '',
   ]
 
