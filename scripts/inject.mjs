@@ -279,7 +279,23 @@ export function runInject(config, requested, keywords, baseDir, auditRecords) {
     c.factors = s
   }
   // 确定性收口：同分必须有稳定序，否则同一 scope 每次输出抖动。
-  candidates.sort((a, b) => (b.score - a.score || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)))
+  // tie-break 按 (日期, 层代, 序号数值) —— schema.md §1.3.5 的收口口径;
+  // 纯 id 字典序在混形态下会把新六位 100000 排到存量 999 之后(时序倒挂)。
+  const idOrder = (x) => {
+    const m = /-([0-9]{8})-([0-9]{6}|[0-9]{3})(?:-|\.md$|$)/.exec(x)
+    return m ? [m[1], m[2].length === 3 ? 0 : 1, parseInt(m[2], 10)] : null
+  }
+  const byEntryOrder = (a, b) => {
+    const ka = idOrder(a.id)
+    const kb = idOrder(b.id)
+    if (ka && kb) {
+      if (ka[0] !== kb[0]) return ka[0] < kb[0] ? -1 : 1
+      if (ka[1] !== kb[1]) return ka[1] - kb[1]
+      if (ka[2] !== kb[2]) return ka[2] - kb[2]
+    } else if (ka !== kb) return ka ? -1 : 1
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+  }
+  candidates.sort((a, b) => (b.score - a.score || byEntryOrder(a, b)))
   // ===== 全部分数相同 → 降级为零注入（宁可零注入，也不注入一份常量噪音）=====
   // 判据：候选集里每一条 **score 完全相同** —— 那排序实际是由 ID 字典序决定的，输出与本次
   // 会话上下文毫无关系（同一 scope 恒返回同一组），相关性恒等于 0。这种「看起来在挑、其实在

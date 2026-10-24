@@ -62,16 +62,20 @@ v0 校验器**只查并集，不查 type↔status 耦合**。理由：蒸馏提�
 - 文件必须以 `---` 行起始、下一个 `---` 行闭合；其内必须是 YAML 映射（非空对象）。
 - 违规形态（任一即 exit 1）：缺 frontmatter / 未闭合 / YAML 解析失败 / 非映射 / 缺必填键 / 未知键 / 字段值违规。
 - 与正文的关系：**校验器不读正文**；存量迁移只追加 frontmatter，保 ID、保文件名、保正文语义。
-- 命名（`LRN|ERR|FEAT-YYYYMMDD-NNN[-slug].md`）不在本契约内 —— 归项目命名门禁。
+- 命名（现行 `LRN|ERR|FEAT-YYYYMMDD-HHMMSS[-slug].md`，六位时分秒；存量三位 `NNN` 形态只读兼容）不在本契约内 —— 归项目命名门禁。
 
-#### 1.3.1 取号必须经分配器（2026-10-18 立 · 编号唯一性）
+#### 1.3.1 取号必须经分配器（2026-10-18 立 · 编号唯一性；2026-10-24 改时分秒六位）
 
-**NNN 的分配权威 = `scripts/next-id.sh`，不得自行「扫本地目录取 max+1」。**
+**取号权威 = `scripts/next-id.sh`，不得自行「扫本地目录取 max+1」。**
+
+现行编号形态：`LRN|ERR|FEAT-YYYYMMDD-HHMMSS`（本地时分秒，六位）。
+存量三位形态 `NNN`（001..999）**只读兼容、永不复用** —— 顺序号对「看得见别人」零容忍，
+而可见域扫描是启发式，漏看一个就撞号；时分秒把撞号条件压到「同日同型同秒」。
 
 ```bash
-# 新建条目前取号（--claim 会原子占用，同号并发时后到者拿 exit 3，重跑即可）
+# 新建条目前取号（**建文件必须走 --claim**;探测模式不落账本,不作为建文件依据）
 bash .agents/skills/self-improving-like-systems/scripts/next-id.sh <LRN|ERR|FEAT> --claim
-# 排查跨工作树撞号
+# 排查跨工作树撞号（三/六位双形态）
 bash .agents/skills/self-improving-like-systems/scripts/next-id.sh --audit [YYYYMMDD]
 ```
 
@@ -79,15 +83,17 @@ bash .agents/skills/self-improving-like-systems/scripts/next-id.sh --audit [YYYY
 「扫本地取 max+1」只看得到本工作树，兄弟工作树里**尚未提交**的条目完全不可见 ——
 两个 agent 并发取号必然撞号。这不是疏忽，是本地扫描在多工作树下**结构上不可能**看见别人。
 
-分配器把可见域扩到五层：本工作树 / 主检出 / **兄弟工作树** / claim 记录 / `my_dev` 已提交条目；
-同秒并发的最后一瞬由 claim 文件的原子创建兜住。
+分配器把占用检测扩到五层：本工作树 / 主检出 / **兄弟工作树** / claim 记录 / `my_dev` 已提交条目；
+候选时分秒被占则 +1 秒避让。同秒并发的最后一瞬由 **claim 文件（按 ID 唯一，无工作树 slug 段）**
+的原子创建兜住：两棵工作树同秒抢同一号，后到者拿 exit 3，重跑即得新秒。
 
-**判据**：文件名里的 NNN 必须是分配器吐出来的。凭印象取号、或扫本地目录取 max+1，
+**判据**：文件名里的编号必须是分配器吐出来的。凭印象取号、或扫本地目录取 max+1，
 产出的号**可能在别人那里已被占用** —— 而 D6 命名门禁只看当前检出，
-并***分支里的撞号在合并前完全不可见**（撞号不是发现得太晚，是根本没机会被发现）。
+未合并分支里的撞号在合并前完全不可见（撞号不是发现得太晚，是根本没机会被发现）。
 
 > 存量豁免见 `scripts/gates/baselines/D6-learnings-duplicate-ids.txt`。
 > 清理存量撞号时必须同步改所有引用该 ID 的位置（registry / `covered_entries` / 其它条目正文）。
+> 项目侧 D6 命名门禁实例与存量豁免 baseline 的正则须同步放行六位形态（项目侧一次性动作，协议仓不代做）。
 
 ### 1.3.5 召回排序（加权打分 · 三因子）
 
@@ -95,7 +101,7 @@ bash .agents/skills/self-improving-like-systems/scripts/next-id.sh --audit [YYYY
 用的是同一组维度，差别只在权重与衰减常数：
 
 `score = w_relevance·relevance + w_importance·importance + w_recency·recency`，三因子各归一到 [0,1]，
-同分一律 **id 升序**收口（同一 scope 每次输出必须确定）。
+同分一律按 **(日期, 层代, 序号数值) 升序**收口（存量三位层在前；同一 scope 每次输出必须确定）。
 
 | 因子 | 取值 | 口径 |
 |---|---|---|
@@ -193,7 +199,7 @@ verify 观测账 `guard_keys`）全部假定 `guard_ref` 是 registry 成员，�
 | `severity` | enum | `info` \| `warn` \| `error` |
 | `payload` | object | 原始细节（供行级引用）；v0 不做结构强校验 |
 | `fingerprint` | string | 同一错误的归并键。**首要键而非唯一真理**（近邻候选留人工合并）；宿主/容器双形态路径归一化后计算，算法权威 = 事件层（`../scripts/capture.mjs`：`sha256(kind + 错误码集合 + 消息骨架)`；路径剥已知前缀、否则只留末两段；十六进制/UUID/数字/引号内容一律抹掉 —— 易变部分不抹掉，归并就退化成无限流） |
-| `entry_id` | string \| null | 关联条目 ID（`LRN\|ERR\|FEAT-YYYYMMDD-NNN`）或 `null`（未关联） |
+| `entry_id` | string \| null | 关联条目 ID（`LRN\|ERR\|FEAT-YYYYMMDD-HHMMSS`，存量三位兼容）或 `null`（未关联） |
 | `provenance` | object \| null | **出处**：这条事件从哪来、靠什么采到的（判据表见 §2.1）；`null` = 本次输入不带出处（纯文本 CLI / 门禁文本） |
 
 ### 2.1 Event.provenance —— 事件出处（判据）
@@ -282,7 +288,7 @@ verify 观测账 `guard_keys`）全部假定 `guard_ref` 是 registry 成员，�
 | `kind` | enum | `gate`（commit 门禁）\| `hook`（生命周期钩子） |
 | `path` | string | 仓内相对路径（守卫脚本位置） |
 | `command` | string[] | 直调 argv（与 registry `args` 同源，**不经包管理器 run 层**） |
-| `covered_entries` | string[] | 绑定的条目 ID（`LRN\|ERR\|FEAT-YYYYMMDD-NNN` 形态）；门禁校验每条在 `entries_dir` 存在 |
+| `covered_entries` | string[] | 绑定的条目 ID（`LRN\|ERR\|FEAT-YYYYMMDD-HHMMSS` 形态，存量三位兼容）；门禁校验每条在 `entries_dir` 存在 |
 | `last_run` | string \| null | ISO 8601；最近一次运行时间 |
 | `last_result` | enum \| null | `pass` \| `fail` \| `skipped` \| `error`（`error` = 守卫自身异常 → fail-open 只记审计不阻塞） |
 | `shadow_runs` | integer ≥ 0 | shadow 运行累计次数（新守卫首 3 次 warn-only） |
@@ -515,7 +521,7 @@ D6 此前固定打印「编号唯一性全部合规」，而基线里躺着 7 �
   由 `.git/info/exclude` 排除）。
 - scope 枚举与该仓 `.learnings/index.md` 既有主题分组同构（infra/testing/git/data-ui/model/kb/other），
   default=other 永不自动注入。
-- 命名门禁实例：`scripts/gates/D6-learnings-naming.sh`（`LRN|ERR|FEAT-YYYYMMDD-NNN` 前缀强制，
+- 命名门禁实例：`scripts/gates/D6-learnings-naming.sh`（`LRN|ERR|FEAT-YYYYMMDD-HHMMSS` 前缀强制，存量三位兼容；
   fixtures 目录不在其扫描面内）。
 - 条目-守卫绑定门禁实例：条目门禁 G2（resolved 必须有 guard_ref 且存在）。
 - 宿主钩子同构对象：`scripts/guards/pre-commit.mjs` 的 GUARDS 数组（key/args/when 三键来源）。

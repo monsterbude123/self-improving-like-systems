@@ -114,9 +114,11 @@ export class LifecycleError extends Error {
   }
 }
 
-/** 条目 ID 从文件名取：`LRN-20261016-003-slug.md` → `LRN-20261016-003`（不符合命名的一律不识别）。 */
+/** 条目 ID 从文件名取：`LRN-20261024-143025-slug.md` → `LRN-20261024-143025`（六位现行形态;
+ *  存量三位 `NNN` 只读兼容;不符合命名的一律不识别）。边界同口径:其后是 `-` 或 `.md` 结尾 ——
+ *  slug 是可选段,无 slug 文件名的尾段以 `.md` 收尾,只认 `-` 会把它整个漏掉。 */
 export function entryIdFromName(name) {
-  const m = /^((?:LRN|ERR|FEAT)-\d{8}-\d{3})(?:-|\.md$)/.exec(name)
+  const m = /^((?:LRN|ERR|FEAT)-\d{8}-(?:\d{6}|\d{3}))(?:-|\.md$)/.exec(name)
   return m ? m[1] : null
 }
 

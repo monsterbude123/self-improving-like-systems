@@ -31,7 +31,7 @@ import { pathToFileURL } from 'node:url'
 import { parseYaml as yamlLoad } from './lib/yaml-lite.mjs'
 import { resolveRepoRoot, resolveConfigPath, BUILTIN_DEFAULT_CONFIG } from './validate.mjs'
 
-const ENTRY_ID_RE = /^(LRN|ERR|FEAT)-[0-9]{8}-[0-9]{3}/
+const ENTRY_ID_RE = /^(LRN|ERR|FEAT)-[0-9]{8}-(?:[0-9]{6}|[0-9]{3})/
 const TYPE_ORDER = ['ERR', 'LRN', 'FEAT']
 
 /** 载入配置并返回 { config, configLabel, repoRoot }；失败抛 Error（CLI 层转 exit 1）。 */
@@ -72,7 +72,7 @@ function parseEntry(absPath, fileName) {
   const h = (lines.find((l) => l.startsWith('# ')) || '').replace(/^#\s*/, '')
   if (h.startsWith(id)) title = h.slice(id.length).replace(/^[·\-:\s]+/, '').trim()
   if (!title) {
-    const m = id.match(/^(?:LRN|ERR|FEAT)-[0-9]{8}-[0-9]{3}-(.+)$/)
+    const m = id.match(/^(?:LRN|ERR|FEAT)-[0-9]{8}-(?:[0-9]{6}|[0-9]{3})-(.+)$/)
     title = m ? m[1] : id
   }
   return {
@@ -109,7 +109,7 @@ export function renderIndex(entries, entriesDir) {
   }
   out.push(`---`)
   out.push('')
-  out.push(`**合计**：${entries.length} 条（ERR/LRN/FEAT 按类型分组，组内按文件名排序）。`)
+  out.push(`**合计**：${entries.length} 条（ERR/LRN/FEAT 按类型分组，组内按（日期,层代,序号数值）排序）。`)
   return out.join('\n') + '\n'
 }
 
@@ -126,8 +126,25 @@ export function collectEntries(entriesAbsDir) {
     const ta = TYPE_ORDER.indexOf(a.type)
     const tb = TYPE_ORDER.indexOf(b.type)
     if (ta !== tb) return ta - tb
+    // 同类型内排序(01-01 编号方案):同日按(层代,序号数值)——存量三位层整体在前、
+    // 新六位层在后,层内数值比较。纯数值比较修不了倒挂(新号 000001=1 < 旧号 999),
+    // 003 与 000003 数值并列也丢确定性;不可解析文件名的按原名排最后(稳定兜底)。
+    const ra = idRank(a.file)
+    const rb = idRank(b.file)
+    if (ra && rb) {
+      if (ra[0] !== rb[0]) return ra[0] < rb[0] ? -1 : 1
+      if (ra[1] !== rb[1]) return ra[1] - rb[1]
+      if (ra[2] !== rb[2]) return ra[2] - rb[2]
+    } else if (ra !== rb) return ra ? -1 : 1
     return a.file < b.file ? -1 : a.file > b.file ? 1 : 0
   })
+}
+
+/** 条目文件名 → (日期, 层代, 序号数值);层代:存量三位=0,新六位=1。不可解析返回 null。 */
+function idRank(file) {
+  const m = /^(?:LRN|ERR|FEAT)-([0-9]{8})-([0-9]{6}|[0-9]{3})(?:-|\.md$)/.exec(file)
+  if (!m) return null
+  return [m[1], m[2].length === 3 ? 0 : 1, parseInt(m[2], 10)]
 }
 
 /** link-check：索引全文中相对链接目标（排除 http/mailto/# 锚）须 ∈ git ls-files。返回违规行数组。 */

@@ -55,7 +55,8 @@ function freshRankTmp() {
 
 /** 从注入块里按出现顺序抽出条目 ID（顺序本身就是被断言对象）。 */
 function injectedIds(stdout) {
-  return [...stdout.matchAll(/\[((?:LRN|ERR|FEAT)-\d{8}-\d{3})/g)].map((m) => m[1])
+  // 六位在前、双形态:三位的旧写法会把六位夹具静默截断成三位幻影 ID(混进断言里假绿/假红)
+  return [...stdout.matchAll(/\[((?:LRN|ERR|FEAT)-\d{8}-(?:\d{6}|\d{3}))/g)].map((m) => m[1])
 }
 
 /** 读 fixture 目录里的审计 JSONL → 记录数组（文件不存在返回 []）。 */
