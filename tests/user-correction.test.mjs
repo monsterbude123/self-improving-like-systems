@@ -13,11 +13,11 @@
  */
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { cpSync, copyFileSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { SIGNALS, detectSignals, promptFrom, renderContext } from '../scripts/hook-user-correction.mjs'
 import { computeFingerprint } from '../scripts/capture.mjs'
 
@@ -257,6 +257,112 @@ describe('端到端 · 接线层行为', () => {
       })
       assert.equal(r.status, 0)
       assert.equal(eventLines(dir).length, 0, '关闭捕获开关后不得留下事件')
+      // 「有信号但没记账」必须与「没有纠正信号」长得不一样 —— stderr 说清楚，stdout 形状不变。
+      assert.match(r.stderr, /kill_switch\.capture=false/, '没记账要在 stderr 讲清楚原因')
+      assert.match(r.stderr, /未落库/)
+      const out = JSON.parse(r.stdout.trim())
+      assert.match(out.hookSpecificOutput.additionalContext, /unexpected/, '信号块仍要输出（stdout 形状不变）')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+/**
+ * ★ 仓根实例配置路径（GitHub issue #1 的回归）
+ *
+ * ## 为什么上面那些用例全都测不到这个 bug
+ *
+ * 本文件原有的端到端用例**一律显式传 `SELF_IMPROVING_CONFIG`**。env 通道在配置链里
+ * 优先级高于「仓根实例」，于是子进程的 cwd 是什么**根本不影响结果** —— bug 被完美遮住，
+ * 在真实接入里已经半年没人发现。
+ *
+ * 真实的接入形态是：项目根有一份 `.self-improving.yaml`（仓根实例），钩子由宿主在项目目录里起。
+ * 本块按那个形态跑：**不设** env 覆盖，临时目录 `git init` 出仓根。
+ */
+describe('★ 仓根实例路径（issue #1 回归）', () => {
+  /**
+   * 造一个「项目」：临时目录 + git init + 仓根实例配置 `.self-improving.yaml`
+   * + 一条能被检索命中的存量条目。
+   *
+   * 条目正文含 `signal=still-failing`（纠正信号规范文本的骨架 token），
+   * scope=infra（= fixture 配置的 hook.default_scopes）⇒ 检索能命中它。
+   */
+  function freshRepoInstance() {
+    const dir = freshTmp()
+    copyFileSync(path.join(dir, 'config-on.yaml'), path.join(dir, '.self-improving.yaml'))
+    execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' })
+    writeFileSync(
+      path.join(dir, 'entries', 'LRN-20261027-001-correction-signal-not-captured.md'),
+      [
+        '---',
+        'type: LRN',
+        'status: active',
+        'scope: infra',
+        'claim: "纠正信号 signal=still-failing 没落库：先查 capture 子进程的 cwd 与配置链"',
+        'guard_ref: null',
+        'recurrence: 1',
+        'last_verified_at: "2026-10-27"',
+        '---',
+        '',
+        '# 纠正信号没落库时先查配置链',
+        '',
+        'capture 子进程若把 cwd 设成层自己的目录，配置链会落到内置默认值，纠正信号一条都不落库。',
+        '',
+      ].join('\n'),
+    )
+    return dir
+  }
+
+  /** 不设 SELF_IMPROVING_CONFIG —— 逼出「仓根实例」这条配置链路径。 */
+  function runHookWithoutEnvOverride(dir, payload) {
+    const env = { ...process.env }
+    delete env.SELF_IMPROVING_CONFIG
+    return spawnSync(process.execPath, [HOOK], {
+      encoding: 'utf8',
+      input: JSON.stringify(payload),
+      timeout: 30_000,
+      cwd: dir,
+      env,
+    })
+  }
+
+  it('纠正信号落进仓根实例的事件库，且命中过的存量条目被检索回来', () => {
+    const dir = freshRepoInstance()
+    try {
+      const r = runHookWithoutEnvOverride(dir, {
+        hook_event_name: 'UserPromptSubmit',
+        session_id: 'sess-y',
+        prompt: '怎么还是不行',
+      })
+      assert.equal(r.status, 0, `钩子不得失败：${r.stderr}`)
+
+      const evs = eventLines(dir)
+      assert.equal(evs.length, 1, `纠正信号应落进仓根实例的事件账，实得 ${evs.length} 条（issue #1：曾恒为 0）`)
+      assert.equal(evs[0].source, 'hook')
+      assert.match(evs[0].payload.message, /^user-correction signal=still-failing$/)
+
+      const out = JSON.parse(r.stdout.trim())
+      const ctx = out.hookSpecificOutput.additionalContext
+      assert.match(ctx, /still-failing/)
+      // 闭环：不止落库，还要把命中过的存量条目捞回来（issue #1 的第二个症状：检索结果恒空）
+      assert.match(ctx, /已命中的存量经验条目/, '检索结果恒空是 issue #1 的第二个症状')
+      assert.match(ctx, /LRN-20261027-001/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('没有仓根实例配置时：不得静默假装记账（stderr 讲清，事件仍为零，stdout 形状不变）', () => {
+    const dir = freshRepoInstance()
+    try {
+      rmSync(path.join(dir, '.self-improving.yaml'))
+      const r = runHookWithoutEnvOverride(dir, { prompt: '怎么还是不行' })
+      assert.equal(r.status, 0)
+      assert.equal(eventLines(dir).length, 0, '没有实例配置就不得落库（内置默认值的 capture 开关是关的）')
+      assert.match(r.stderr, /没有实例配置/, '「没记账」必须在 stderr 讲清原因，别让它长得像「没发生」')
+      const out = JSON.parse(r.stdout.trim())
+      assert.match(out.hookSpecificOutput.additionalContext, /still-failing/, '信号块仍要输出（stdout 形状不变）')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

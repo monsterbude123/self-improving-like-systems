@@ -37,6 +37,25 @@
  *
  * 没命中 → 不输出、不写事件、不起子进程，exit 0。理由同族：钩子绝不搞失败会话。
  *
+ * ## 子进程的 cwd 与配置链（GitHub issue #1 的修法）
+ *
+ * capture 子进程**用自己进程的 cwd** 解析配置链（`--config` > env > 仓根 > 内置默认）。
+ * 若把它设成**层自己的目录**，层目录不是接入项目的仓根 ⇒ 仓根那条找不到 ⇒ 回落内置默认值
+ * （`kill_switch.capture=false`）⇒ capture 提前 return ⇒ **零事件、零检索、且完全静默**
+ * （capture 只往 stderr 打一句，而钩子当时把子进程 stderr 吞了）。
+ * 这就是 issue #1：纠正信号一条都没落库，注入块里的「已命中的存量经验条目」恒空。
+ *
+ * 修法：**先在调用方 cwd 上把配置链解析一次**（复用 `inject.mjs` 的 `loadContext` ——
+ * 配置链只有这一份实现），再把解析到的实例配置用 `--config` **钉死**传给子进程，
+ * 子进程的 cwd 设为配置所在目录。钉死之后子进程的解析结果与自己的 cwd 无关
+ * （也不必再跑一次 `resolveRepoRoot`）。
+ *
+ * ## 「有信号但没记账」≠「没有纠正信号」
+ *
+ * 事件没落库时（配置链解析失败 / `kill_switch.capture` 关着 / 子进程异常），钩子往 **stderr**
+ * 打一行说明。**stdout 不动** —— stdout 是 additionalContext 通道（每轮往消息历史累积，
+ * 形状不能变）。stderr 经项目侧薄壳的 `stdio: 'inherit'` 原样透到宿主的钩子日志，人看得见。
+ *
  * 用法：
  *   node hook-user-correction.mjs            # 接线层（stdin = 钩子载荷 JSON）
  *   node hook-user-correction.mjs --probe    # 探测：只报告「提示词取自哪个键 + 命中哪些信号」，零写盘
@@ -48,6 +67,8 @@ import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+
+import { loadContext } from './inject.mjs'
 
 const SELF = path.dirname(fileURLToPath(import.meta.url))
 
@@ -134,14 +155,55 @@ export function detectSignals(text) {
 }
 
 /**
+ * 解析「这次纠正要写进哪份配置、写到哪个基目录」——**一次钩子调用只解析一次**
+ * （每条命中各解析一次 = 每次都重跑一遍 `git rev-parse` 找仓根）。
+ *
+ * 解析在**调用方 cwd** 上做（钩子是被宿主在项目里起的，那才是项目的位置），
+ * 复用 `inject.mjs` 导出的 `loadContext` —— 配置链只有这一份实现，自己重写一份就是第二份真相。
+ *
+ * 失败不抛：返回 `{error}`，由调用方走 fail-open（不写事件，但要说清楚为什么没写）。
+ *
+ * @returns {{config:object|null, baseDir:string|null, configPath:string|null, error:Error|null}}
+ */
+export function resolveCaptureContext() {
+  try {
+    const loaded = loadContext({ env: process.env, cwd: process.cwd() })
+    // configPath 归一成绝对路径：env 通道给相对路径时（相对**本进程**的 cwd 解释），
+    // 子进程拿到绝对路径才不会在自己的 cwd 上重新解释一遍。
+    const configPath = loaded.configPath ? path.resolve(loaded.configPath) : null
+    const baseDir = configPath ? path.dirname(configPath) : loaded.baseDir
+    return { config: loaded.config, baseDir, configPath, error: null }
+  } catch (e) {
+    return { config: null, baseDir: null, configPath: null, error: e }
+  }
+}
+
+/**
  * 把一次命中写成事件。复用 capture.mjs 的 CLI 而不是自己写事件行 ——
  * 指纹计算 / 按日分片 / 同指纹归并 / kill-switch / 审计全在那边，
  * 这里自己实现一遍就是第二份真相（本仓最忌讳的形态）。
  *
  * 子进程数 = 命中的信号类别数（≤ SIGNALS.length，定值上界，与数据规模无关），
  * 符合 O(1) spawn 纪律：这里的 N 不是「文件数 / 条目数」这种会随仓库增长的量。
+ *
+ * @param {object} ctx `resolveCaptureContext()` 的结果（一次调用共用一份）
  */
-function captureSignal(sig, payload) {
+function captureSignal(sig, payload, ctx) {
+  // ===== 没落库的三种情形，一律 stderr 说清楚（stdout 形状不许变）=====
+  if (ctx.error) {
+    console.error(`[hook-user-correction] 配置链解析失败（${ctx.error.message}）—— 纠正信号未落库`)
+    return ''
+  }
+  if (!ctx.config || ctx.config.kill_switch.capture !== true) {
+    // 两种「没记账」的原因不同，说法也不同：没有实例配置（配置链落到内置默认值，
+    // 内置默认值的 capture 开关本来就是关的）≠ 项目显式把开关关了。
+    const why = ctx.configPath === null
+      ? '没有实例配置（配置链落到内置默认值，内置的 capture 开关是关的）'
+      : 'kill_switch.capture=false'
+    console.error(`[hook-user-correction] ${why} —— 纠正信号未落库（事件捕获开关是关的）`)
+    return ''
+  }
+
   const cap = path.join(SELF, 'capture.mjs')
   const args = [
     cap,
@@ -157,10 +219,22 @@ function captureSignal(sig, payload) {
       session_id: payload?.session_id ?? null,
     }),
   ]
+  // 实例配置钉死传给子进程 —— issue #1 的修法本体：子进程此后与自己的 cwd 无关。
+  if (ctx.configPath) args.push('--config', ctx.configPath)
   try {
-    const r = spawnSync(process.execPath, args, { encoding: 'utf8', timeout: 15_000, cwd: SELF })
+    const r = spawnSync(process.execPath, args, {
+      encoding: 'utf8',
+      timeout: 15_000,
+      // cwd = 配置所在目录（= capture 自己的 baseDir 语义），**不是层目录**。
+      cwd: ctx.baseDir || process.cwd(),
+    })
+    if (r.error || r.status !== 0) {
+      console.error(`[hook-user-correction] capture 子进程异常（exit=${r.status}${r.error ? ` · ${r.error.message}` : ''}）—— 纠正信号未落库`)
+      return ''
+    }
     return typeof r.stdout === 'string' ? r.stdout.trim() : ''
-  } catch {
+  } catch (e) {
+    console.error(`[hook-user-correction] capture 子进程起不来（${e.message}）—— 纠正信号未落库`)
     return '' // 钩子永不因子进程失败而失败
   }
 }
@@ -232,7 +306,9 @@ async function main() {
   if (hits.length === 0) return 0
 
   const excerpt = text.replace(/\s+/g, ' ').trim()
-  const recalled = hits.map((h) => captureSignal(h, { excerpt, session_id: payload?.session_id })).join('\n')
+  // 配置链只解析一次（每条命中各解析一次 = 每次都重跑一遍 git 找仓根）
+  const ctx = resolveCaptureContext()
+  const recalled = hits.map((h) => captureSignal(h, { excerpt, session_id: payload?.session_id }, ctx)).join('\n')
   emitContext(renderContext(hits, recalled))
   return 0
 }
