@@ -928,6 +928,10 @@ export function main(argv) {
     return 0
   }
 
+  // 派发裁决（退出码）与 JSON 输出：先算出来，再在 try 之外打守卫债汇总 ——
+  // 汇总绝不能影响裁决（见 try 之后那段注释）。
+  let rc = 0
+  let jsonOut = ''
   try {
     // --inject-state：先把夹具要的守卫级状态并进账，再照常派发（本次派发即可按 blocking 语义裁决）。
     // 放在 try 内：injectGuardState 的用法错误（未知 key / 账不可读）经下面统一的 usage 分支映射为 exit 2。
@@ -948,22 +952,17 @@ export function main(argv) {
     if (all) {
       const { guards } = loadRegistry(config, baseDir)
       const results = []
-      let rc = 0
       for (const g of guards) {
         const r = dispatch({ config, baseDir, key: g.key, text, cwd: baseDir, probe })
         results.push(r.record)
         if (r.exitCode === 2 && rc === 0) rc = 2
       }
-      // 守卫债汇总（issue #2）：派发完了才知道现在有几条判据自己没跑起来。
-      printDebtSummary({ config, baseDir })
-      if (wantJson) process.stdout.write(`${JSON.stringify({ dispatched: results.length, results }, null, 2)}\n`)
-      return rc
+      jsonOut = wantJson ? `${JSON.stringify({ dispatched: results.length, results }, null, 2)}\n` : ''
+    } else {
+      const r = dispatch({ config, baseDir, key, text, cwd: baseDir, probe })
+      rc = r.exitCode
+      jsonOut = wantJson ? `${JSON.stringify(r.record, null, 2)}\n` : ''
     }
-    const r = dispatch({ config, baseDir, key, text, cwd: baseDir, probe })
-    // 守卫债汇总（issue #2）：单条派发同样要看得见 —— 接入项目的 pre-commit 走的就是单条路径。
-    printDebtSummary({ config, baseDir })
-    if (wantJson) process.stdout.write(`${JSON.stringify(r.record, null, 2)}\n`)
-    return r.exitCode
   } catch (e) {
     if (e && e.usage) {
       console.error(`用法错误：${e.message}`)
@@ -973,6 +972,13 @@ export function main(argv) {
     flushAudit(config, baseDir, [{ tool: 'run-guard', action: 'fail-open', error: e.message }])
     return 0
   }
+
+  // ===== 守卫债汇总（issue #2）：**放在 try 之外** =====
+  // 汇总只是可见性，绝不能因为它抛错就把一次真实的阻断裁决（exit 2）降级成放行（exit 0）。
+  // （验证轮实测：汇总渲染抛错 → 阻断被静默降级成放行。故这段移出 try，汇总自己兜住异常。）
+  printDebtSummary({ config, baseDir })
+  if (jsonOut !== '') process.stdout.write(jsonOut)
+  return rc
 }
 
 /**
@@ -1053,7 +1059,24 @@ export function collectDebtGuards(state) {
 const DEBT_MAX_KEYS = 5
 /** 注入小节的行数上限与字符上限（SessionStart 的上下文预算是硬的）。 */
 const DEBT_MAX_LINES = 5
-const DEBT_MAX_CHARS = 600
+export const DEBT_MAX_CHARS = 600
+
+/**
+ * 读守卫状态账并算出守卫债清单 —— **两个出口共用的唯一读法**。
+ *
+ * ## 为什么带 `read` 字段回来
+ *
+ * `readGuardState()` 把「读不到」分成 `absent`（账不存在 = 没有债）与
+ * `invalid` / `error`（账在但读不动）。**后两者不能被当成「零债」**：
+ * 账坏了就静默说「一切正常」，等于把「看不见」换了个说法 —— 而本 whole feature
+ * 存在的理由就是「让看不见的东西看得见」。故把 `read` 一路带回来，由出口决定要不要告警。
+ *
+ * @returns {{rows:object[], read:'ok'|'absent'|'invalid'|'error', path:string}}
+ */
+export function readDebtGuards({ config, baseDir }) {
+  const { state, read, path } = readGuardState(config, baseDir)
+  return { rows: collectDebtGuards(state), read, path }
+}
 
 /**
  * 守卫债**汇总行**（一行）—— 给「人主动查守卫」时看（run-guard 派发输出的末尾）。
@@ -1076,9 +1099,14 @@ export function renderDebtSummaryLine(rows) {
  * 守卫债**注入小节**（多行）—— 给会话开头看（SessionStart 拼进 agent 上下文）。
  *
  * 口径同 `renderDebtSummaryLine`（同一份判定，见 `collectDebtGuards`）。
- * 有行数与字符上限：SessionStart 的上下文预算是硬的，宁可少列几条 + 给条数，也不能撑爆它。
+ *
+ * ## 预算
+ *
+ * `maxChars` 是**硬上限**（含尾行与末尾换行）—— 调用方通常传「注入块之外还剩多少」，
+ * 故本函数必须在任何情况下都不超过它：连标题与尾注都放不下时，退成一行紧凑摘要
+ * （条数还在，信息不丢），而不是硬塞一整节把上下文预算撑爆。
  */
-export function renderDebtSection(rows) {
+export function renderDebtSection(rows, { maxChars = DEBT_MAX_CHARS } = {}) {
   if (!Array.isArray(rows) || rows.length === 0) return ''
   const failing = rows.filter((r) => r.failing)
   const recovered = rows.filter((r) => !r.failing)
@@ -1096,23 +1124,42 @@ export function renderDebtSection(rows) {
   let shown = 0
   for (const item of items) {
     if (shown >= DEBT_MAX_LINES) break
-    if (out.join('\n').length + 1 + item.length + tail.length > DEBT_MAX_CHARS) break
+    // 预算核算含尾注与两个换行：算漏一个换行就会超预算（实测超 12 字）。
+    const projected = out.join('\n').length + 1 + item.length + 1 + tail.length + 1
+    if (projected > maxChars) break
     out.push(item)
     shown++
   }
   const hidden = items.length - shown
   if (hidden > 0) out.push(`- …另有 ${hidden} 条`)
   out.push(tail)
-  return `${out.join('\n')}\n`
+  const text = `${out.join('\n')}\n`
+  if (text.length <= maxChars) return text
+  // 连标题+尾注都放不下 → 退成一行紧凑摘要（条数还在）。
+  const compact = `⚠ 守卫债 ${rows.length} 个（当前报错 ${failing.length}）—— 它们不拦你\n`
+  return compact.length <= maxChars ? compact : `${compact.slice(0, Math.max(1, maxChars - 1))}\n`
 }
 
 /**
  * 派发后打一行守卫债汇总（issue #2 的第二个出口）。
  * 只在真的有债时打 —— 没有债就零噪音（这行不是每次派发都要出现的仪式）。
+ *
+ * ⚠ **本函数绝不允许影响派发裁决**：它抛错会被 `main()` 的 fail-open catch 吞成 exit 0，
+ * 把一次真实的阻断裁决（exit 2）降级成放行。故自己兜住所有异常，只报不抛。
+ * （这条是验证轮实测出来的：汇总渲染一抛错，阻断就变成了放行。）
  */
 export function printDebtSummary({ config, baseDir }) {
-  const line = renderDebtSummaryLine(collectDebtGuards(readGuardState(config, baseDir).state))
-  if (line !== '') console.error(line)
+  try {
+    const { rows, read, path } = readDebtGuards({ config, baseDir })
+    if (read === 'invalid' || read === 'error') {
+      console.error(`[run-guard] ⚠ 守卫状态账读不动（${path}）—— 守卫债清单可能不完整，别当「零债」看`)
+    }
+    const line = renderDebtSummaryLine(rows)
+    if (line !== '') console.error(line)
+  } catch (e) {
+    // 汇总只是可见性，不许因为它坏掉就把整个派发搞挂。
+    console.error(`[run-guard] ⚠ 守卫债汇总读不出来（${e.message}）—— 不影响放行裁决`)
+  }
 }
 
 /**

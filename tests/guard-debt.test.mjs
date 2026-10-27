@@ -16,11 +16,11 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { collectDebtGuards, renderDebtSection, renderDebtSummaryLine } from '../scripts/run-guard.mjs'
+import { collectDebtGuards, printDebtSummary, renderDebtSection, renderDebtSummaryLine } from '../scripts/run-guard.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SKILL_ROOT = path.resolve(HERE, '..')
@@ -33,6 +33,22 @@ function freshTmp() {
   const dir = mkdtempSync(path.join(tmpdir(), 'debt-test-'))
   cpSync(FIXTURE_DIR, dir, { recursive: true })
   return dir
+}
+
+/**
+ * registry 里放一条 debt-stub（不派发的桩）→ 零 spawn，也能走完整条派发路径。
+ * 另有一份「会命中的 blocking 守卫」用于裁决相关的用例（见该 describe 内）。
+ */
+function writeRegistryStub(dir) {
+  writeFileSync(path.join(dir, 'registry.yaml'), 'guards: []\n')
+}
+
+/** registry 里放一条 debt-stub 守卫（派发时被跳过、不 spawn），用于走通「单 key 派发」路径。 */
+function writeDebtStubRegistry(dir) {
+  writeFileSync(
+    path.join(dir, 'registry.yaml'),
+    ['guards:', '  - key: "debt-stub-demo"', "    args: ['scripts/gates/none.mjs']", '    when: always', '    mode: debt-stub', ''].join('\n'),
+  )
 }
 
 /** 守卫状态账落在 `dirname(events_dir)/guard-state.json` = 临时目录根（配置目录的同级）。 */
@@ -151,15 +167,10 @@ describe('renderDebtSection · 注入小节（SessionStart 拼进上下文）', 
 })
 
 describe('出口一 · run-guard 派发末尾的汇总行', () => {
-  /** registry 里放一条 debt-stub（不派发的桩）→ 零 spawn，也能走完整条派发路径。 */
-  function writeRegistry(dir) {
-    writeFileSync(path.join(dir, 'registry.yaml'), 'guards: []\n')
-  }
-
   it('有债 → stderr 打出汇总行', () => {
     const dir = freshTmp()
     try {
-      writeRegistry(dir)
+      writeRegistryStub(dir)
       writeState(dir, DEBT_STATE)
       const r = spawnSync(process.execPath, [RUN_GUARD, '--all', '--config', path.join(dir, 'config-on.yaml')], {
         encoding: 'utf8', timeout: 30_000, cwd: dir,
@@ -176,7 +187,7 @@ describe('出口一 · run-guard 派发末尾的汇总行', () => {
   it('无债 → 不打汇总行（零噪音）', () => {
     const dir = freshTmp()
     try {
-      writeRegistry(dir)
+      writeRegistryStub(dir)
       writeState(dir, CLEAN_STATE)
       const r = spawnSync(process.execPath, [RUN_GUARD, '--all', '--config', path.join(dir, 'config-on.yaml')], {
         encoding: 'utf8', timeout: 30_000, cwd: dir,
@@ -235,6 +246,177 @@ describe('出口二 · SessionStart 注入小节', () => {
       })
       assert.equal(r.status, 0)
       assert.equal(r.stdout, '', `kill-switch 关着时 stdout 必须严格为空：${r.stdout}`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+/**
+ * ★ 验证轮发现的 6 条 gap 的回归（gaps_found → 回 exec 修的第一轮）
+ *
+ * 这几条都是「看着绿、其实没钉住」的形态：前 15 条用例全绿，变异体照样全绿。
+ * 写这一节就是为了让每个变异体都变红。
+ */
+describe('★ 验证轮 gap 回归（G-02-1..G-02-6）', () => {
+  /** 一个会命中的 blocking 守卫（exit 2 = 命中判据）。 */
+  function writeBlockingGuard(dir) {
+    mkdirSync(path.join(dir, 'guards'), { recursive: true })
+    writeFileSync(path.join(dir, 'guards', 'block.mjs'), 'process.exit(2)\n')
+    writeFileSync(
+      path.join(dir, 'registry.yaml'),
+      [
+        'guards:',
+        '  - key: "block-demo"',
+        "    args: ['guards/block.mjs']",
+        '    when: always',
+        "    command: ['node', 'guards/block.mjs']",
+        '    covered_entries: []',
+        '    mode: blocking',
+        '    shadow_required: 0',
+        '',
+      ].join('\n'),
+    )
+  }
+
+  it('G-02-1 单 key 派发路径也打汇总行（接入项目 pre-commit 走的就是这条路径）', () => {
+    const dir = freshTmp()
+    try {
+      writeDebtStubRegistry(dir)
+      writeState(dir, DEBT_STATE)
+      const r = spawnSync(process.execPath, [RUN_GUARD, '--key', 'debt-stub-demo', '--config', path.join(dir, 'config-on.yaml')], {
+        encoding: 'utf8', timeout: 30_000, cwd: dir,
+        env: { ...process.env, SELF_IMPROVING_CONFIG: path.join(dir, 'config-on.yaml') },
+      })
+      assert.equal(r.status, 0, `期望 exit 0，实得 ${r.status}\n${r.stderr}`)
+      assert.match(r.stderr, /守卫债 3 条/, `单 key 派发没打汇总行：${r.stderr}`)
+      assert.match(r.stderr, /no-bare-vitest/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('G-02-3 汇总行不许改变裁决：阻断守卫命中时退出码仍是 2（不被汇总降级成 0）', () => {
+    const dir = freshTmp()
+    try {
+      writeBlockingGuard(dir)
+      // 拦截权在**状态账**里（不是 registry）—— mode=blocking 才真阻断，否则只警告。
+      writeState(dir, {
+        ...DEBT_STATE,
+        'block-demo': { shadow_runs: 3, shadow_green: 3, error_runs: 0, error_streak: 0, last_result: 'pass', mode: 'blocking' },
+      })
+      const r = spawnSync(process.execPath, [RUN_GUARD, '--key', 'block-demo', '--config', path.join(dir, 'config-on.yaml')], {
+        encoding: 'utf8', timeout: 30_000, cwd: dir,
+        env: { ...process.env, SELF_IMPROVING_CONFIG: path.join(dir, 'config-on.yaml') },
+      })
+      assert.equal(r.status, 2, `阻断裁决被降级了（期望 exit 2）：${r.stderr}`)
+      assert.match(r.stderr, /守卫债 3 条/, '汇总行照样要打（它只是可见性）')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('G-02-2 两个出口读同一本账：账在**配置目录**，不在 cwd（不许各读各的）', () => {
+    const dir = freshTmp()
+    try {
+      // 配置搬到子目录 ⇒ baseDir = 该子目录 ⇒ 状态账落在该子目录
+      const cfgDir = path.join(dir, 'cfg')
+      mkdirSync(cfgDir, { recursive: true })
+      copyFileSync(path.join(dir, 'config-on.yaml'), path.join(cfgDir, 'config-on.yaml'))
+      cpSync(path.join(dir, 'entries'), path.join(cfgDir, 'entries'), { recursive: true })
+      writeState(cfgDir, DEBT_STATE)
+      // 诱饵：cwd 目录下的另一本账（key 完全不同）
+      writeState(dir, { 'decoy-in-cwd': { shadow_runs: 9, error_runs: 7, error_streak: 7, last_result: 'error' } })
+
+      const cfg = path.join(cfgDir, 'config-on.yaml')
+      const s = spawnSync(process.execPath, [SESSION_START, '--project-dir', dir, '--config', cfg], {
+        encoding: 'utf8', timeout: 30_000, cwd: dir,
+        env: { ...process.env, SELF_IMPROVING_CONFIG: cfg },
+      })
+      assert.equal(s.status, 0, s.stderr)
+      assert.match(s.stdout, /no-bare-vitest/, 'SessionStart 读的是配置目录的账')
+      assert.doesNotMatch(s.stdout, /decoy-in-cwd/, '不许读 cwd 目录的账')
+
+      writeRegistryStub(cfgDir)
+      const g = spawnSync(process.execPath, [RUN_GUARD, '--all', '--config', cfg], {
+        encoding: 'utf8', timeout: 30_000, cwd: dir,
+        env: { ...process.env, SELF_IMPROVING_CONFIG: cfg },
+      })
+      assert.equal(g.status, 0, g.stderr)
+      assert.match(g.stderr, /no-bare-vitest/, 'run-guard 读的必须是同一本账')
+      assert.doesNotMatch(g.stderr, /decoy-in-cwd/, '两个出口必须读同一本账')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('G-02-4 没有可注入域（模板默认 default_scopes 为空）时，守卫债照样给出去', () => {
+    const dir = freshTmp()
+    try {
+      writeState(dir, DEBT_STATE)
+      const cfgPath = path.join(dir, 'config-on.yaml')
+      const cfg = readFileSync(cfgPath, 'utf8').replace('default_scopes: [infra, testing]', 'default_scopes: []')
+      writeFileSync(cfgPath, cfg)
+      const r = spawnSync(process.execPath, [SESSION_START, '--project-dir', dir, '--config', cfgPath], {
+        encoding: 'utf8', timeout: 30_000, cwd: dir,
+        env: { ...process.env, SELF_IMPROVING_CONFIG: cfgPath },
+      })
+      assert.equal(r.status, 0, r.stderr)
+      assert.match(r.stdout, /## 守卫健康度/, `没有域不等于没有债：${r.stdout}`)
+      assert.match(r.stdout, /no-bare-vitest/)
+      assert.doesNotMatch(r.stdout, /## 经验注入/, '没有域就不该有注入块')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('G-02-5 状态账损坏 → stderr 必须告警（不许静默当成「零债」）', () => {
+    const dir = freshTmp()
+    try {
+      writeFileSync(path.join(dir, 'guard-state.json'), '{ 这不是合法 JSON')
+      const r = spawnSync(process.execPath, [SESSION_START, '--project-dir', dir, '--config', path.join(dir, 'config-on.yaml')], {
+        encoding: 'utf8', timeout: 30_000, cwd: dir,
+        env: { ...process.env, SELF_IMPROVING_CONFIG: path.join(dir, 'config-on.yaml') },
+      })
+      assert.equal(r.status, 0)
+      assert.match(r.stderr, /守卫状态账读不动/, `账坏了必须告警，不能静默当零债：${r.stderr}`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('G-02-6 小节长度是硬上限（给定 maxChars 就不越界；放不下就退成紧凑摘要）', () => {
+    const rows = collectDebtGuards({ guards: DEBT_STATE })
+    for (const maxChars of [40, 80, 200, 600]) {
+      const section = renderDebtSection(rows, { maxChars })
+      assert.ok(section.length <= maxChars, `maxChars=${maxChars} 时小节 ${section.length} 字，越界了`)
+    }
+    const tiny = renderDebtSection(rows, { maxChars: 40 })
+    assert.match(tiny, /守卫债 3 个/, '放不下整节时要退成紧凑摘要（条数还在）')
+  })
+
+  it('G-02-3 汇总读不出来时不得抛（抛了会被 fail-open 吞成放行）', () => {
+    // 这条是「汇总绝不影响裁决」的根：汇总自己兜住所有异常。
+    // 少了它，一次汇总异常就会把真实的阻断裁决（exit 2）降级成放行（exit 0）。
+    assert.doesNotThrow(() => printDebtSummary({ config: {}, baseDir: undefined }))
+    assert.doesNotThrow(() => printDebtSummary({ config: { storage: { guard_state: 123 } }, baseDir: '/tmp' }))
+  })
+
+  it('G-02-4b 条目目录缺失（注入失败）时，守卫债仍不被吞掉', () => {
+    const dir = freshTmp()
+    try {
+      writeState(dir, DEBT_STATE)
+      const cfgPath = path.join(dir, 'config-on.yaml')
+      // entries_dir 指到一个不存在的目录 ⇒ runInject 抛错 ⇒ 注入块为空
+      writeFileSync(cfgPath, readFileSync(cfgPath, 'utf8').replace('entries_dir: entries/', 'entries_dir: no-such-dir/'))
+      const r = spawnSync(process.execPath, [SESSION_START, '--project-dir', dir, '--config', cfgPath], {
+        encoding: 'utf8', timeout: 30_000, cwd: dir,
+        env: { ...process.env, SELF_IMPROVING_CONFIG: cfgPath },
+      })
+      assert.equal(r.status, 0, r.stderr)
+      assert.doesNotMatch(r.stdout, /## 经验注入/, '注入块该为空')
+      assert.match(r.stdout, /## 守卫健康度/, `注入失败不该把守卫债一起吞掉：${r.stdout}`)
+      assert.match(r.stdout, /no-bare-vitest/)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

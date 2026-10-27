@@ -45,7 +45,10 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { loadContext, runInject, flushAudit, failOpen } from './inject.mjs'
 import { readRecentEvents, renderRecentSection } from './capture.mjs'
-import { collectDebtGuards, readGuardState, renderDebtSection } from './run-guard.mjs'
+import { DEBT_MAX_CHARS, readDebtGuards, renderDebtSection } from './run-guard.mjs'
+
+/** 守卫债小节在预算被吃光时的紧凑摘要长度上限（「有几条在报错」这句话本身要放得下）。 */
+const DEBT_COMPACT_CHARS = 60
 
 function usage(msg) {
   console.error(`用法错误：${msg}
@@ -95,7 +98,25 @@ export function main(argv) {
     return 0
   }
 
-  // ===== 4. 域解析：--scopes > config.hook.default_scopes > []（空 = 不注入）=====
+  // ===== 4. 守卫健康度小节（issue #2）：**与注入路径解耦**，先算出来 =====
+  // 它读的是**守卫状态账**，不是条目库 —— 所以「无可注入域」「条目目录缺失」「注入超时降级」
+  // 都不该把它一起吞掉。模板默认 `hook.default_scopes` 为空（scripts/config.example.yaml），
+  // 若把它挂在注入块后面，接进来的项目默认就看不到守卫债 —— 而「会话开头看得见」
+  // 正是这个出口存在的理由。
+  const debt = readDebtGuards({ config, baseDir })
+  if (debt.read === 'invalid' || debt.read === 'error') {
+    // 账读不动 ≠ 零债：静默说「一切正常」等于把「看不见」换了个说法。
+    console.error(`[hook-session-start] ⚠ 守卫状态账读不动（${debt.path}）—— 守卫债清单可能不完整，别当「零债」看`)
+  }
+  /** 注入块之外还能给小节多少字符（配置的总预算减去已用掉的）。 */
+  const debtBudget = (used) => {
+    const budget = Number.isInteger(config.injection.budget_chars) && config.injection.budget_chars > 0 ? config.injection.budget_chars : 2000
+    const remaining = Math.max(0, budget - used)
+    // 至少给「紧凑摘要」留位置：守卫债有几句在报错，不该因为注入块吃满预算就整段消失。
+    return Math.min(DEBT_MAX_CHARS, Math.max(remaining, DEBT_COMPACT_CHARS))
+  }
+
+  // ===== 5. 域解析：--scopes > config.hook.default_scopes > []（空 = 不注入）=====
   // 非法域一律**过滤掉并提示**（而不是 exit 2）：配置写错时钩子仍要能给出其余合法域的注入，
   // 硬失败等于让一次配置笔误废掉整条会话预加载。
   const configured = config.hook && Array.isArray(config.hook.default_scopes) ? config.hook.default_scopes : []
@@ -115,11 +136,14 @@ export function main(argv) {
     if (!scopes.includes(v)) scopes.push(v)
   }
   if (scopes.length === 0) {
-    console.error('[hook-session-start] 无可注入域（hook.default_scopes 为空或全被过滤），零输出')
+    console.error('[hook-session-start] 无可注入域（hook.default_scopes 为空或全被过滤），零注入')
+    // 没有域只是「没有经验要注入」，**不是**「没有债要说」：守卫债照样给出去。
+    const only = renderDebtSection(debt.rows, { maxChars: debtBudget(0) })
+    if (only !== '') process.stdout.write(only)
     return 0
   }
 
-  // ===== 5. 注入计算（带时间预算）+ 近期事件并入=====
+  // ===== 6. 注入计算（带时间预算）+ 近期事件并入=====
   const auditRecords = []
   try {
     const budgetMs = Number.isInteger(config.injection.budget_ms) && config.injection.budget_ms > 0 ? config.injection.budget_ms : 300
@@ -146,14 +170,19 @@ export function main(argv) {
 
     // ===== 守卫健康度小节（issue #2）：有守卫债才输出，零债 = 零噪音 =====
     // 只读状态账（不 spawn、不写盘）。判定与渲染在 run-guard.mjs 里（判据只此一份）。
-    const debtSection = renderDebtSection(collectDebtGuards(readGuardState(config, baseDir).state))
+    const debtSection = renderDebtSection(debt.rows, { maxChars: debtBudget(block.length) })
     if (debtSection !== '') block += debtSection
 
     flushAudit(config, baseDir, auditRecords)
     if (block !== '') process.stdout.write(block)
     return 0
   } catch (e) {
-    return failOpen(e, config, baseDir, 'hook')
+    // 注入失败（条目目录缺失 / 条目不可读）→ 注入块为空，但**守卫债不能被一起吞掉**：
+    // 它读的是另一本账，与注入失败无关。
+    const code = failOpen(e, config, baseDir, 'hook')
+    const only = renderDebtSection(debt.rows, { maxChars: debtBudget(0) })
+    if (only !== '') process.stdout.write(only)
+    return code
   }
 }
 
