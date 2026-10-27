@@ -954,10 +954,14 @@ export function main(argv) {
         results.push(r.record)
         if (r.exitCode === 2 && rc === 0) rc = 2
       }
+      // 守卫债汇总（issue #2）：派发完了才知道现在有几条判据自己没跑起来。
+      printDebtSummary({ config, baseDir })
       if (wantJson) process.stdout.write(`${JSON.stringify({ dispatched: results.length, results }, null, 2)}\n`)
       return rc
     }
     const r = dispatch({ config, baseDir, key, text, cwd: baseDir, probe })
+    // 守卫债汇总（issue #2）：单条派发同样要看得见 —— 接入项目的 pre-commit 走的就是单条路径。
+    printDebtSummary({ config, baseDir })
     if (wantJson) process.stdout.write(`${JSON.stringify(r.record, null, 2)}\n`)
     return r.exitCode
   } catch (e) {
@@ -984,6 +988,132 @@ export function main(argv) {
  * 阈值 5 会让「整段 shadow 期都在报错」这种最该看的场景反而看不见）。
  */
 export const ERROR_STREAK_THRESHOLD = 3
+
+/**
+ * 守卫债（debt）视图 —— **判定与渲染的唯一一份**（GitHub issue #2）。
+ *
+ * ## 为什么需要它
+ *
+ * 守卫自身异常（起不来 / 超时 / 返回非约定退出码）按设计 fail-open（exit 0，不阻塞提交）。
+ * 这条纪律没错，但它有个致命副作用：**没人看得见**。接入项目的 pre-commit 把层的 stdout/stderr
+ * 收进每守卫的日志文件、成功时不回显；层自己的 `layer-gate.mjs` 只判「层装没装好」，
+ * 完全不知道守卫债。于是「判据根本没在跑」这件事在接入项目里可以累计几十次而全程零报错 ——
+ * 实测：某项目 21 条守卫，`no-bare-vitest` 连续 error 4 次、`no-per-item-spawn` 连续 error 4 次，
+ * 没有任何一处告诉过任何人。
+ *
+ * ## 本函数只做「看得见」，绝不改放行行为
+ *
+ * fail-open 纪律原样保留（守卫自己坏了照样放行、不阻塞提交）。可见性 ≠ 阻断：
+ * 守卫债是**运维债**，该由人看见并处置，不该由协议层擅自把提交堵死。
+ *
+ * ## 口径（与本文件既有口径同源，不另立标准）
+ *
+ *   · 「是不是债」= `evidenceStrength(g) === 'debt'`（本文件既有五档口径：`error_runs > 0`
+ *     或末次 `last_result === 'error'`）—— 不在这里重写一遍判据。
+ *   · 「连挂」= `error_streak ≥ ERROR_STREAK_THRESHOLD`（本文件既有阈值）。
+ *   · 「当前还在报错」= 末次 `last_result === 'error'`；否则算「已恢复」。
+ *
+ * 排序（issue #2 现场四条债里只有两条是当下真坏的，平铺成同等紧急会让人误判优先级）：
+ *   ① 当前报错的在前，其中连挂次数多的更靠前；② 已恢复的随后，按累计次数降序。
+ *
+ * @param {object} state `readGuardState()` 的 `state`（`{guards:{…}}`）
+ * @returns {{key:string,error_runs:number,error_streak:number,last_result:string|null,detail:string|null,failing:boolean,streak_reached:boolean}[]}
+ */
+export function collectDebtGuards(state) {
+  const guards = state && state.guards && typeof state.guards === 'object' ? state.guards : {}
+  const rows = []
+  for (const key of Object.keys(guards)) {
+    const g = guards[key]
+    if (!g || typeof g !== 'object') continue
+    if (evidenceStrength(g) !== 'debt') continue
+    const errorRuns = Number.isInteger(g.error_runs) ? g.error_runs : 0
+    const errorStreak = Number.isInteger(g.error_streak) ? g.error_streak : 0
+    const failing = g.last_result === 'error'
+    rows.push({
+      key,
+      error_runs: errorRuns,
+      error_streak: errorStreak,
+      last_result: typeof g.last_result === 'string' ? g.last_result : null,
+      // 末次是 error 时，`detail` 就是那条错误信息（saveAndAudit 落盘时 detail = run.detail；
+      // 成功那次会把它清成 null）。已恢复的守卫没有末次错误详情 —— 只报累计次数，不编。
+      detail: typeof g.detail === 'string' && g.detail.trim() !== '' ? g.detail.trim() : null,
+      failing,
+      streak_reached: errorStreak >= ERROR_STREAK_THRESHOLD,
+    })
+  }
+  rows.sort((a, b) => {
+    if (a.failing !== b.failing) return a.failing ? -1 : 1
+    if (a.failing && a.error_streak !== b.error_streak) return b.error_streak - a.error_streak
+    return b.error_runs - a.error_runs
+  })
+  return rows
+}
+
+/** 汇总行最多列几个守卫 key（超出的只给条数）。 */
+const DEBT_MAX_KEYS = 5
+/** 注入小节的行数上限与字符上限（SessionStart 的上下文预算是硬的）。 */
+const DEBT_MAX_LINES = 5
+const DEBT_MAX_CHARS = 600
+
+/**
+ * 守卫债**汇总行**（一行）—— 给「人主动查守卫」时看（run-guard 派发输出的末尾）。
+ * 零债时返回空串（调用方据此不打任何东西 —— 没有债就零噪音）。
+ */
+export function renderDebtSummaryLine(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return ''
+  const failing = rows.filter((r) => r.failing).length
+  const brief = rows.slice(0, DEBT_MAX_KEYS).map((r) => {
+    const tag = r.failing
+      ? (r.streak_reached ? `连挂 ${r.error_streak}` : `报错 ${r.error_streak}`)
+      : `累计 ${r.error_runs}·已恢复`
+    return `${r.key}(${tag})`
+  })
+  const more = rows.length > DEBT_MAX_KEYS ? ` …另有 ${rows.length - DEBT_MAX_KEYS} 条` : ''
+  return `[run-guard] ⚠ 守卫债 ${rows.length} 条（当前报错 ${failing} · 已恢复 ${rows.length - failing}；判据自己不生效，仍 fail-open 放行）：${brief.join(' / ')}${more}`
+}
+
+/**
+ * 守卫债**注入小节**（多行）—— 给会话开头看（SessionStart 拼进 agent 上下文）。
+ *
+ * 口径同 `renderDebtSummaryLine`（同一份判定，见 `collectDebtGuards`）。
+ * 有行数与字符上限：SessionStart 的上下文预算是硬的，宁可少列几条 + 给条数，也不能撑爆它。
+ */
+export function renderDebtSection(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return ''
+  const failing = rows.filter((r) => r.failing)
+  const recovered = rows.filter((r) => !r.failing)
+  const items = []
+  for (const r of failing) {
+    const streak = r.streak_reached ? `连续 error ${r.error_streak} 次` : `error ${r.error_streak} 次`
+    const detail = r.detail ? ` · 最近：${r.detail}` : ''
+    items.push(`- ⚠ ${r.key}：${streak} · 累计 ${r.error_runs} 次${detail}`)
+  }
+  for (const r of recovered) {
+    items.push(`- ✔ 已恢复 ${r.key}：累计 ${r.error_runs} 次`)
+  }
+  const tail = '注：这些守卫自己报错时不拦提交（fail-open 纪律不变）—— 查清它们为什么跑不起来。'
+  const out = [`## 守卫健康度（当前报错 ${failing.length} · 已恢复 ${recovered.length}）`]
+  let shown = 0
+  for (const item of items) {
+    if (shown >= DEBT_MAX_LINES) break
+    if (out.join('\n').length + 1 + item.length + tail.length > DEBT_MAX_CHARS) break
+    out.push(item)
+    shown++
+  }
+  const hidden = items.length - shown
+  if (hidden > 0) out.push(`- …另有 ${hidden} 条`)
+  out.push(tail)
+  return `${out.join('\n')}\n`
+}
+
+/**
+ * 派发后打一行守卫债汇总（issue #2 的第二个出口）。
+ * 只在真的有债时打 —— 没有债就零噪音（这行不是每次派发都要出现的仪式）。
+ */
+export function printDebtSummary({ config, baseDir }) {
+  const line = renderDebtSummaryLine(collectDebtGuards(readGuardState(config, baseDir).state))
+  if (line !== '') console.error(line)
+}
 
 /**
  * `--dry-run` 报表：读 registry + 状态文件（两处只读），逐条给证据强度 + 连续 error 视图。

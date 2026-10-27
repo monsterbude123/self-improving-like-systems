@@ -25,6 +25,16 @@
  * 输出（stdout 单块，供钩子拼进上下文）：
  *   ① 注入块（scope 过滤 + top_k + 预算降级，渲染逻辑 import inject.mjs 的 runInject，不复制第二份）
  *   ② 「近期触发事件」小节（票 08 事件捕获的并入点；无事件 = 零噪音，不输出）
+ *   ③ 「守卫健康度」小节（GitHub issue #2 的可见性出口；有守卫债才输出，零债 = 零噪音）
+ *
+ * ## ③ 为什么要有守卫健康度
+ *
+ * 守卫自己报错时按设计 fail-open（放行、不阻塞提交）—— 这条纪律没错，但**没人看得见**：
+ * 接入项目的 pre-commit 把层的输出收进每守卫日志文件、成功时不回显。
+ * 于是「判据根本没在跑」可以累计几十次而全程零报错。本小节把这件事抬到会话开头，
+ * 让 agent 与人第一眼就知道「这几条守卫不拦你」。
+ * **只可见性，不改放行行为**：守卫坏了照样放行（fail-open 纪律不变）。
+ * 判定与渲染复用 `run-guard.mjs` 的 `collectDebtGuards` / `renderDebtSection`（判据只此一份）。
  *
  * 退出码：0 = 一切正常（含 kill-switch off、fail-open、零命中）；2 = 参数用法错误。
  * **任何内部异常 fail-open**：stdout 空 + 审计一条 + exit 0 —— 钩子绝不能把会话启动搞失败。
@@ -35,6 +45,7 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { loadContext, runInject, flushAudit, failOpen } from './inject.mjs'
 import { readRecentEvents, renderRecentSection } from './capture.mjs'
+import { collectDebtGuards, readGuardState, renderDebtSection } from './run-guard.mjs'
 
 function usage(msg) {
   console.error(`用法错误：${msg}
@@ -132,6 +143,11 @@ export function main(argv) {
       const recent = readRecentEvents(config, baseDir, maxEvents)
       block += renderRecentSection(recent)
     }
+
+    // ===== 守卫健康度小节（issue #2）：有守卫债才输出，零债 = 零噪音 =====
+    // 只读状态账（不 spawn、不写盘）。判定与渲染在 run-guard.mjs 里（判据只此一份）。
+    const debtSection = renderDebtSection(collectDebtGuards(readGuardState(config, baseDir).state))
+    if (debtSection !== '') block += debtSection
 
     flushAudit(config, baseDir, auditRecords)
     if (block !== '') process.stdout.write(block)

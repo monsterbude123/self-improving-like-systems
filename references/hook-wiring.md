@@ -39,7 +39,7 @@ prompt 侧的注入点兜底，而噪音是不可逆的上下文预算损耗。�
 
 | 情形 | stdout | 退出码 |
 |---|---|---|
-| 正常（injection 开 + 有命中） | 注入块 + 近期触发事件小节 | 0 |
+| 正常（injection 开 + 有命中） | 注入块 + 近期触发事件小节 + 守卫健康度小节（有守卫债才有） | 0 |
 | 无命中 / `hook.default_scopes` 为空 | 空（零噪音） | 0 |
 | `kill_switch.injection=false` | 空（零副作用） | 0 |
 | 超字符预算（`budget_chars`） | 标题行列表（inject.mjs 的既有降级） | 0 |
@@ -49,6 +49,25 @@ prompt 侧的注入点兜底，而噪音是不可逆的上下文预算损耗。�
 
 `timeoutMs`（钩子外层）必须 ≥ `config.injection.timeout_ms` 且 ≫ `budget_ms`：注入计算本身
 在 `budget_ms` 内出结果或降级，外层留足 node 启动余量。量级断言在 `tests/hook.test.mjs`。
+
+## 守卫健康度小节（守卫债的可见性出口）
+
+守卫自己报错时按设计 **fail-open**（放行、不阻塞提交）—— 这条纪律不动。
+但缺了观测它就退化成「静默失效」：接入项目的 pre-commit 把层的输出收进每守卫日志文件、
+成功时不回显，于是「判据根本没在跑」可以累计几十次而全程零报错。
+
+故 SessionStart 在注入块之后追加一节 `## 守卫健康度`：
+
+- **当前报错**（末次 `last_result === 'error'`）排最前，连挂 ≥ 3 次的标「连续 error N 次」，
+  并附最近一次的错误详情；
+- **已恢复**（末次不是 error 但历史上报过错）随后，按累计次数降序，标「已恢复」；
+- 行数与字符都有上限（上下文预算是硬的），超出的只给条数；
+- **零债 = 零噪音**：没有守卫债就完全不输出这一节。
+
+判定与渲染复用 `scripts/run-guard.mjs` 的 `collectDebtGuards` / `renderDebtSection`
+（与 `run-guard` 派发末尾的汇总行同源，判据只有一份）。同一份账的另一个出口是
+`run-guard` 派发输出末尾的一行汇总。**两者都只提升可见性，不改变放行行为。**
+判据与出口的验收在 `tests/guard-debt.test.mjs`。
 
 ## 蒸馏触发面（票 09 · 片段权威 = `hook-wiring-distill.json`）
 
