@@ -402,6 +402,24 @@ describe('★ 验证轮 gap 回归（G-02-1..G-02-6）', () => {
     assert.doesNotThrow(() => printDebtSummary({ config: { storage: { guard_state: 123 } }, baseDir: '/tmp' }))
   })
 
+  it('G-02-7 出口一在状态账损坏时必须告警（不许静默当零债）', () => {
+    const dir = freshTmp()
+    try {
+      writeDebtStubRegistry(dir)
+      // 账损坏 ⇒ 债清单读不出来 ⇒ 汇总行为空。此时 stderr 那句「账读不动」
+      // 是出口一唯一的「账不可信」信号 —— 少了它，账坏与零债长得一模一样。
+      writeFileSync(path.join(dir, 'guard-state.json'), '{ 这不是合法 JSON')
+      const r = spawnSync(process.execPath, [RUN_GUARD, '--all', '--config', path.join(dir, 'config-on.yaml')], {
+        encoding: 'utf8', timeout: 30_000, cwd: dir,
+        env: { ...process.env, SELF_IMPROVING_CONFIG: path.join(dir, 'config-on.yaml') },
+      })
+      assert.equal(r.status, 0, r.stderr)
+      assert.match(r.stderr, /守卫状态账读不动/, `账坏了出口一必须告警：${r.stderr}`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('G-02-4b 条目目录缺失（注入失败）时，守卫债仍不被吞掉', () => {
     const dir = freshTmp()
     try {
