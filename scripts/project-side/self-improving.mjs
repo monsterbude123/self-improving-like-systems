@@ -228,22 +228,33 @@ async function main(argv) {
 }
 
 /**
- * 指针文件位置：优先用项目里已存在的指针（一个项目可能有自己的 skill 名），
- * 找不到就用协议层约定的默认名。
+ * 指针文件位置。
+ *
+ * ## 判据 = 「同时含两条通道标识」
+ *
+ * 2026-10-21 实测踩到的坑：早先用「文件里提到过 self-improving 就算指针」来认，
+ * 结果本仓的 `silent-failure-defense/SKILL.md`（它也提到协议层）被当成了指针 ——
+ * 于是门禁去判一个**不是指针**的文件，判红说「指针没写全两条通道」，
+ * 而真正的指针明明是全的。症状与根因差了十万八千里。
+ *
+ * 现在的判据与门禁**同源**：指针 = 那个**同时**含 GitHub 仓地址与可执行 npm 命令形态的文件。
+ * 认指针与判指针用同一个定义，两边不会各说各话。
+ * 多个文件同时满足时取排序第一个（并由门禁自己再判一遍 —— 真正有歧义时它会报红）。
  */
 function readPointerRel(projectDir) {
   const base = path.join(projectDir, '.agents', 'skills')
+  const npmRe = new RegExp(String.raw`(npm i -g|npx)\s+${NPM_PKG}`)
   try {
-    for (const name of readdirSync(base)) {
+    const hits = []
+    for (const name of readdirSync(base).sort()) {
       if (name === LAYER_NAME) continue // 层自己的目录不是指针
       const p = path.join(base, name, 'SKILL.md')
-      if (existsSync(p)) {
-        const text = readFileSync(p, 'utf8')
-        if (text.includes(NPM_PKG) || text.includes('self-improving')) {
-          return `.agents/skills/${name}/SKILL.md`
-        }
-      }
+      if (!existsSync(p)) continue
+      let text = ''
+      try { text = readFileSync(p, 'utf8') } catch { continue }
+      if (text.includes(GITHUB_URL) && npmRe.test(text)) hits.push(name)
     }
+    if (hits.length > 0) return `.agents/skills/${hits[0]}/SKILL.md`
   } catch {
     // 目录不存在 / 读不动 → 用默认名
   }
